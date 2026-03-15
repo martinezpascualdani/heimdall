@@ -27,7 +27,11 @@ type Adapter struct {
 	DefaultPort   int
 }
 
-var listLineRE = regexp.MustCompile(`Host:\s*([\d.]+)\s*\([^)]*\)\s*Ports:\s*(\d+)/open`)
+// -oL output can be "Host: IP () Ports: PORT/open/..." or "open tcp PORT IP timestamp"
+var (
+	listLineRE   = regexp.MustCompile(`Host:\s*([\d.]+)\s*\([^)]*\)\s*Ports:\s*(\d+)/open`)
+	listLineRE2  = regexp.MustCompile(`open\s+tcp\s+(\d+)\s+([\d.]+)\s+\d+`)
+)
 
 func resolveMasscanPath() string {
 	if p := os.Getenv("MASSCAN_PATH"); p != "" {
@@ -177,9 +181,16 @@ func (a *Adapter) runMasscan(ctx context.Context, targetPath, portArg string, nu
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		var ip string
+		var port int
 		if m := listLineRE.FindStringSubmatch(line); len(m) >= 3 {
-			ip := m[1]
-			port, _ := strconv.Atoi(m[2])
+			ip = m[1]
+			port, _ = strconv.Atoi(m[2])
+		} else if m := listLineRE2.FindStringSubmatch(line); len(m) >= 3 {
+			port, _ = strconv.Atoi(m[1])
+			ip = m[2]
+		}
+		if ip != "" {
 			observations = append(observations, engine.Observation{IP: ip, Port: port, Status: "open"})
 		}
 	}

@@ -281,6 +281,40 @@ paths:
       responses:
         '200':
           description: Paginated jobs
+  /v1/executions/{id}/requeue:
+    post:
+      summary: Requeue failed jobs
+      description: Sets all failed jobs (attempt < max_attempts) for this execution back to pending; increments attempt. Use after fixing a systemic issue to retry.
+      operationId: requeueExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: OK (body.requeued = count)
+        '404':
+          description: Execution not found
+  /v1/executions/{id}/cancel:
+    post:
+      summary: Cancel execution
+      description: Sets execution and all pending/assigned/running jobs to canceled. Workers stop claiming them.
+      operationId: cancelExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: OK (body.canceled = count, body.status = canceled)
+        '404':
+          description: Execution not found
 
 components:
   schemas:
