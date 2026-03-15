@@ -10,44 +10,48 @@ import (
 )
 
 const (
-	DefaultDatasetURL  = "http://localhost:8080"
-	DefaultScopeURL    = "http://localhost:8081"
-	DefaultRoutingURL  = "http://localhost:8082"
-	DefaultTargetURL   = "http://localhost:8083"
-	DefaultCampaignURL = "http://localhost:8084"
-	DefaultTimeout     = 30 * time.Second
+	DefaultDatasetURL    = "http://localhost:8080"
+	DefaultScopeURL      = "http://localhost:8081"
+	DefaultRoutingURL    = "http://localhost:8082"
+	DefaultTargetURL     = "http://localhost:8083"
+	DefaultCampaignURL   = "http://localhost:8084"
+	DefaultExecutionURL  = "http://localhost:8085"
+	DefaultTimeout       = 30 * time.Second
 )
 
 // Config holds Heimdall service base URLs and HTTP timeout for heimdallctl.
 type Config struct {
-	DatasetURL  string        `yaml:"dataset_url" json:"dataset_url"`
-	ScopeURL    string        `yaml:"scope_url" json:"scope_url"`
-	RoutingURL  string        `yaml:"routing_url" json:"routing_url"`
-	TargetURL   string        `yaml:"target_url" json:"target_url"`
-	CampaignURL string        `yaml:"campaign_url" json:"campaign_url"`
-	Timeout     time.Duration `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
+	DatasetURL    string        `yaml:"dataset_url" json:"dataset_url"`
+	ScopeURL      string        `yaml:"scope_url" json:"scope_url"`
+	RoutingURL    string        `yaml:"routing_url" json:"routing_url"`
+	TargetURL     string        `yaml:"target_url" json:"target_url"`
+	CampaignURL   string        `yaml:"campaign_url" json:"campaign_url"`
+	ExecutionURL  string        `yaml:"execution_url" json:"execution_url"`
+	Timeout       time.Duration `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
 }
 
 // fileConfig is the YAML file shape (timeout in seconds).
 type fileConfig struct {
-	DatasetURL  string `yaml:"dataset_url"`
-	ScopeURL    string `yaml:"scope_url"`
-	RoutingURL  string `yaml:"routing_url"`
-	TargetURL   string `yaml:"target_url"`
-	CampaignURL string `yaml:"campaign_url"`
-	TimeoutSec  int    `yaml:"timeout_seconds"`
+	DatasetURL   string `yaml:"dataset_url"`
+	ScopeURL     string `yaml:"scope_url"`
+	RoutingURL   string `yaml:"routing_url"`
+	TargetURL    string `yaml:"target_url"`
+	CampaignURL  string `yaml:"campaign_url"`
+	ExecutionURL string `yaml:"execution_url"`
+	TimeoutSec   int    `yaml:"timeout_seconds"`
 }
 
 // Load builds Config from defaults, then optional config files, then environment.
 // Order: 4) defaults, 3) fallback .heimdall.yaml in cwd if exists, 2) primary ~/.config/heimdall/config.yaml if exists, 1) env (highest priority).
 func Load() *Config {
 	c := &Config{
-		DatasetURL:  DefaultDatasetURL,
-		ScopeURL:    DefaultScopeURL,
-		RoutingURL:  DefaultRoutingURL,
-		TargetURL:   DefaultTargetURL,
-		CampaignURL: DefaultCampaignURL,
-		Timeout:     DefaultTimeout,
+		DatasetURL:   DefaultDatasetURL,
+		ScopeURL:     DefaultScopeURL,
+		RoutingURL:   DefaultRoutingURL,
+		TargetURL:    DefaultTargetURL,
+		CampaignURL:  DefaultCampaignURL,
+		ExecutionURL: DefaultExecutionURL,
+		Timeout:      DefaultTimeout,
 	}
 
 	// Fallback: .heimdall.yaml in cwd (lower priority)
@@ -77,6 +81,9 @@ func Load() *Config {
 	}
 	if v := os.Getenv("HEIMDALL_CAMPAIGN_URL"); v != "" {
 		c.CampaignURL = v
+	}
+	if v := os.Getenv("HEIMDALL_EXECUTION_URL"); v != "" {
+		c.ExecutionURL = v
 	}
 	if v := os.Getenv("HEIMDALL_TIMEOUT"); v != "" {
 		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
@@ -111,6 +118,9 @@ func applyFile(c *Config, path string) bool {
 	}
 	if f.CampaignURL != "" {
 		c.CampaignURL = f.CampaignURL
+	}
+	if f.ExecutionURL != "" {
+		c.ExecutionURL = f.ExecutionURL
 	}
 	if f.TimeoutSec > 0 {
 		c.Timeout = time.Duration(f.TimeoutSec) * time.Second

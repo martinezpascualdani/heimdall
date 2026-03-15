@@ -13,8 +13,8 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "heimdallctl",
-	Short: "Heimdall CLI – operate dataset, scope, routing, target, and campaign services",
-	Long:  `Heimdallctl is the official CLI for Heimdall. It talks to dataset-service, scope-service, routing-service, target-service, and campaign-service over HTTP. Use -o json for machine-readable output.`,
+	Short: "Heimdall CLI – operate dataset, scope, routing, target, campaign, and execution services",
+	Long:  `Heimdallctl is the official CLI for Heimdall. It talks to dataset, scope, routing, target, campaign, and execution services over HTTP. Use -o json for machine-readable output.`,
 }
 
 func init() {

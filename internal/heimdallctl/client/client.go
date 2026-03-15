@@ -14,13 +14,14 @@ import (
 
 // Client calls Heimdall HTTP APIs. No business logic; only HTTP and JSON.
 type Client struct {
-	cfg      *config.Config
-	http     *http.Client
-	dataset  string
-	scope    string
-	routing  string
-	target   string
-	campaign string
+	cfg       *config.Config
+	http      *http.Client
+	dataset   string
+	scope     string
+	routing   string
+	target    string
+	campaign  string
+	execution string
 }
 
 // New builds a Client from config. Base URLs are trimmed of trailing slashes.
@@ -29,12 +30,13 @@ func New(cfg *config.Config) *Client {
 		cfg = config.Load()
 	}
 	c := &Client{
-		cfg:      cfg,
-		dataset:  strings.TrimSuffix(cfg.DatasetURL, "/"),
-		scope:    strings.TrimSuffix(cfg.ScopeURL, "/"),
-		routing:  strings.TrimSuffix(cfg.RoutingURL, "/"),
-		target:   strings.TrimSuffix(cfg.TargetURL, "/"),
-		campaign: strings.TrimSuffix(cfg.CampaignURL, "/"),
+		cfg:       cfg,
+		dataset:   strings.TrimSuffix(cfg.DatasetURL, "/"),
+		scope:     strings.TrimSuffix(cfg.ScopeURL, "/"),
+		routing:   strings.TrimSuffix(cfg.RoutingURL, "/"),
+		target:    strings.TrimSuffix(cfg.TargetURL, "/"),
+		campaign:  strings.TrimSuffix(cfg.CampaignURL, "/"),
+		execution: strings.TrimSuffix(cfg.ExecutionURL, "/"),
 	}
 	c.http = &http.Client{Timeout: cfg.Timeout}
 	return c
@@ -184,6 +186,49 @@ func (c *Client) put(ctx context.Context, baseURL, path string, body interface{}
 	return nil
 }
 
+// patchBody performs PATCH with JSON body and decodes response into out.
+func (c *Client) patchBody(ctx context.Context, baseURL, path string, body interface{}, out interface{}) error {
+	url := baseURL + path
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		bodyReader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bodyReader)
+	if err != nil {
+		return err
+	}
+	if bodyReader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		msg := string(respBody)
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &errBody)
+		if errBody.Error != "" {
+			msg = errBody.Error
+		}
+		return &apiError{StatusCode: resp.StatusCode, Body: string(respBody), Message: msg}
+	}
+	if out != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
+
 // delete performs DELETE. Returns apiError on 4xx/5xx.
 func (c *Client) delete(ctx context.Context, baseURL, path string) error {
 	url := baseURL + path
@@ -256,6 +301,11 @@ func (c *Client) TargetHealth(ctx context.Context) HealthResult {
 // CampaignHealth calls GET /health on campaign-service.
 func (c *Client) CampaignHealth(ctx context.Context) HealthResult {
 	return c.health(ctx, c.campaign)
+}
+
+// ExecutionHealth calls GET /health on execution-service.
+func (c *Client) ExecutionHealth(ctx context.Context) HealthResult {
+	return c.health(ctx, c.execution)
 }
 
 func (c *Client) health(ctx context.Context, baseURL string) HealthResult {
