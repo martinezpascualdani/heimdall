@@ -1,0 +1,306 @@
+openapi: 3.0.3
+info:
+  title: Heimdall Inventory Service API
+  version: 0.1.0
+  description: |
+    **inventory-service:** Source of truth for assets, exposures and observations.
+    execution-service calls POST /v1/ingest/job-completed on each job complete (fire-and-forget).
+    Current state: assets and exposures with first_seen_at/last_seen_at; immutable observations table.
+    v1: host assets, tcp_port exposures. Filters by campaign_id, target_id, run_id apply to the same observation context.
+    **ready:** Requires Postgres.
+
+paths:
+  /health:
+    get:
+      summary: Liveness
+      operationId: health
+      responses:
+        '200':
+          description: OK
+  /ready:
+    get:
+      summary: Readiness
+      description: false if Postgres unavailable.
+      operationId: ready
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: Not ready
+  /version:
+    get:
+      summary: Version
+      operationId: version
+      responses:
+        '200':
+          description: version and build_time
+
+  /v1/ingest/job-completed:
+    post:
+      summary: Ingest job completion (explicit payload)
+      description: |
+        Idempotent: one ingest per (execution_id, job_id). If already ingested, returns 409.
+        Payload is explicit (observations + context), not result_summary. observed_at is required.
+      operationId: ingestJobCompleted
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobCompletedRequest'
+      responses:
+        '201':
+          description: Ingested
+        '400':
+          description: Invalid body or missing observed_at
+        '409':
+          description: Job already ingested
+
+  /v1/assets:
+    get:
+      summary: List assets
+      operationId: listAssets
+      parameters:
+        - name: asset_type
+          in: query
+          schema:
+            type: string
+            example: host
+        - name: campaign_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: target_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: run_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: first_seen_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: last_seen_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list (items, total, limit, offset)
+  /v1/assets/{id}:
+    get:
+      summary: Get asset by ID (with exposures)
+      operationId: getAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Asset and its exposures
+        '404':
+          description: Not found
+  /v1/assets/{id}/exposures:
+    get:
+      summary: List exposures for an asset
+      operationId: listExposuresByAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of exposures (items)
+
+  /v1/exposures:
+    get:
+      summary: List exposures
+      operationId: listExposures
+      parameters:
+        - name: asset_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: asset_type
+          in: query
+          schema:
+            type: string
+        - name: exposure_type
+          in: query
+          schema:
+            type: string
+            example: tcp_port
+        - name: campaign_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: target_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list (items, total, limit, offset)
+
+  /v1/observations:
+    get:
+      summary: List observations
+      operationId: listObservations
+      parameters:
+        - name: execution_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: job_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: run_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: campaign_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: target_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: asset_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: from_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list (items, total, limit, offset)
+
+  /v1/diffs/executions:
+    get:
+      summary: Diff between two executions (v1)
+      description: Returns assets_new, exposures_new, exposures_gone from observations in from_execution_id vs to_execution_id.
+      operationId: diffExecutions
+      parameters:
+        - name: from_execution_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: to_execution_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Diff (assets_new, exposures_new, exposures_gone, exposures_unchanged). Compares observation sets per execution only, not last_seen.
+        '400':
+          description: Missing or invalid execution ids
+
+components:
+  schemas:
+    JobCompletedRequest:
+      type: object
+      required:
+        - execution_id
+        - job_id
+        - observed_at
+      properties:
+        execution_id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        campaign_id:
+          type: string
+          format: uuid
+        target_id:
+          type: string
+          format: uuid
+        target_materialization_id:
+          type: string
+          format: uuid
+        scan_profile_slug:
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+        observations:
+          type: array
+          items:
+            type: object
+            properties:
+              ip:
+                type: string
+              port:
+                type: integer
+              status:
+                type: string

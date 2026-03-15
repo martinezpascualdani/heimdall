@@ -22,6 +22,7 @@ Heimdall es una **plataforma de exposure intelligence** para equipos de segurida
 - **Targets:** Definición de alcances (include/exclude por país, ASN, prefijo, world). **Materialización** a snapshots CIDR inmutables y diff entre ellos.
 - **Campañas:** Creación de campañas (target + perfil de escaneo), lanzamiento manual o programado. Los runs se despachan a una cola.
 - **Plano de ejecución:** Los workers reclaman jobs por pull, ejecutan descubrimiento de puertos (**ZMap** o **Masscan**) y reportan observaciones. Escala añadiendo workers o subiendo concurrencia. Los resultados se guardan por job.
+- **Inventario:** execution-service reenvía los job completados a **inventory-service**; se almacenan assets (p. ej. hosts), exposures (p. ej. puertos abiertos) y observaciones para estado actual e histórico; diff entre ejecuciones.
 
 Todo es **API-first** y **containerizado**. Un único CLI, **heimdallctl**, cubre install, sync y operaciones (executions, workers, requeue, cancel).
 
@@ -38,7 +39,7 @@ cd deployments/docker
 docker compose up --build -d
 ```
 
-Se levantan PostgreSQL, Redis, dataset-, scope-, routing-, target-, campaign- y execution-service, más un scan-worker.
+Se levantan PostgreSQL, Redis, dataset-, scope-, routing-, target-, campaign-, execution- e inventory-service, más un scan-worker.
 
 ## Setup en un comando (datasets + sync)
 
@@ -56,9 +57,9 @@ Usa `install --skip-wait` para no esperar a los datasets. Config opcional: varia
 ## Build local (sin Docker)
 
 - **Go 1.22+**, **PostgreSQL 15+**, **Redis**
-- Crear BDs: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service`, `heimdall_execution_service`
+- Crear BDs: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service`, `heimdall_execution_service`, `heimdall_inventory_service`
 - Copiar `configs/.env.example` a `.env`, configurar DSNs y URLs de servicios
-- Arrancar cada servicio: `go run ./cmd/dataset-service`, `./cmd/scope-service`, etc.; opcionalmente `./cmd/scan-worker`
+- Arrancar cada servicio: `go run ./cmd/dataset-service`, `./cmd/scope-service`, etc., `./cmd/execution-service`, `./cmd/inventory-service`; opcionalmente `./cmd/scan-worker`
 - CLI: `go build -o bin/heimdallctl ./cmd/heimdallctl`
 
 ---
@@ -95,6 +96,7 @@ Usa `install --skip-wait` para no esperar a los datasets. Config opcional: varia
 - **Target service** — Definición de targets (país, ASN, prefijo, world). Materialización a snapshots CIDR; diff entre snapshots.
 - **Campaign service** — Plan de control: campañas, perfiles de escaneo, runs. Lanzamiento manual o programado; dispatch a Redis Streams.
 - **Execution service** — Plan de ejecución: consumir runs, crear executions y jobs; registro de workers, heartbeat, claim, complete/fail/renew, **requeue** y **cancel**.
+- **Inventory service** — Fuente de verdad de assets, exposures y observaciones; ingesta desde execution-service al completar jobs; estado actual (first_seen/last_seen) e histórico inmutable; diff entre dos ejecuciones.
 - **Scan workers** — Pull-based; ZMap o Masscan; escala horizontal y concurrencia por worker.
 - **heimdallctl** — Status, **install** (datasets + sync), dataset/scope/routing/target/campaign, **execution** y **worker** (list, jobs, requeue, cancel, update concurrency).
 
@@ -144,6 +146,11 @@ curl "http://localhost:8085/v1/executions/<execution_id>/jobs?limit=20"
 curl -X POST "http://localhost:8085/v1/executions/<execution_id>/requeue"
 curl -X POST "http://localhost:8085/v1/executions/<execution_id>/cancel"
 curl "http://localhost:8085/v1/workers"
+
+# Inventario (assets, exposures, observations; diff entre ejecuciones)
+curl "http://localhost:8086/v1/assets?limit=10"
+curl "http://localhost:8086/v1/observations?execution_id=<execution_id>&limit=10"
+curl "http://localhost:8086/v1/diffs/executions?from_execution_id=<id>&to_execution_id=<id>"
 ```
 
 ---
@@ -180,8 +187,9 @@ Especificaciones OpenAPI (esquemas y semántica de peticiones/respuestas):
 | target | [api/openapi/target-service.yaml](api/openapi/target-service.yaml) |
 | campaign | [api/openapi/campaign-service.yaml](api/openapi/campaign-service.yaml) |
 | execution | [api/openapi/execution-service.yaml](api/openapi/execution-service.yaml) |
+| inventory | [api/openapi/inventory-service.yaml](api/openapi/inventory-service.yaml) |
 
-Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency, list jobs), jobs (claim, complete, fail, renew), executions (list, get, list jobs, **requeue**, **cancel**).
+Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency, list jobs), jobs (claim, complete, fail, renew), executions (list, get, list jobs, **requeue**, **cancel**). Al completar un job notifica a inventory-service (fire-and-forget). Inventory-service: ingesta (POST job-completed), assets, exposures, observations (con filtros), diff entre dos ejecuciones.
 
 ---
 
@@ -195,6 +203,7 @@ Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency
 | **target-service** | Targets, materialización, snapshots, diff | 8083 |
 | **campaign-service** | Campañas, perfiles de escaneo, runs; dispatch a Redis | 8084 |
 | **execution-service** | Executions, jobs, workers (claim, complete, fail, requeue, cancel) | 8085 |
+| **inventory-service** | Assets, exposures, observations; ingesta desde execution-service; diff entre ejecuciones | 8086 |
 | **Redis** | Stream `heimdall:campaign:runs` | 6379 |
 | **PostgreSQL** | Todas las BDs de servicios | 5432 |
 
@@ -202,7 +211,7 @@ Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency
 
 # 🔧 Scan workers
 
-Los workers se registran en execution-service, envían heartbeat y **reclaman** jobs por pull. Cada job tiene prefijos y configuración de puertos; el worker ejecuta **ZMap** o **Masscan** (`SCAN_ENGINE=zmap|masscan`, por defecto masscan), parsea resultados en observaciones (IP, puerto, estado) y las envía en `result_summary`. Las observaciones se guardan en `execution_jobs.result_summary`.
+Los workers se registran en execution-service, envían heartbeat y **reclaman** jobs por pull. Cada job tiene prefijos y configuración de puertos; el worker ejecuta **ZMap** o **Masscan** (`SCAN_ENGINE=zmap|masscan`, por defecto masscan), parsea resultados en observaciones (IP, puerto, estado) y las envía en `result_summary`. Las observaciones se guardan en `execution_jobs.result_summary`. Al completar un job, execution-service notifica a inventory-service (best-effort); inventory-service hace upsert de assets/exposures y añade observaciones.
 
 **Escalar:** más réplicas (`docker compose up -d --scale scan-worker=5`) y/o mayor `WORKER_MAX_CONCURRENCY` por worker.
 
@@ -212,7 +221,7 @@ Los workers se registran en execution-service, envían heartbeat y **reclaman** 
 
 1. Crear todas las BDs en Postgres (ver [Instalación](#-instalación)).
 2. Copiar `configs/.env.example` a `.env`, configurar DSNs y URLs de servicios.
-3. Arrancar servicios en terminales separadas: `go run ./cmd/dataset-service`, `./cmd/scope-service`, `./cmd/routing-service`, `./cmd/target-service`, `./cmd/campaign-service`, `./cmd/execution-service`; opcionalmente `./cmd/scan-worker`.
+3. Arrancar servicios en terminales separadas: `go run ./cmd/dataset-service`, `./cmd/scope-service`, `./cmd/routing-service`, `./cmd/target-service`, `./cmd/campaign-service`, `./cmd/execution-service`, `./cmd/inventory-service`; opcionalmente `./cmd/scan-worker`.
 4. Tests: `go test ./...`
 
 ---

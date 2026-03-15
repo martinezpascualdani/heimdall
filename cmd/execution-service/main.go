@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/api/handlers"
+	"github.com/martinezpascualdani/heimdall/internal/execution-service/inventoryclient"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/ingest"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/scheduler"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/storage"
@@ -64,6 +65,7 @@ func main() {
 			ingestEnabled = b
 		}
 	}
+	inventoryURL := strings.TrimSuffix(os.Getenv("INVENTORY_SERVICE_URL"), "/")
 
 	store, err := storage.NewPostgresStore(dsn)
 	if err != nil {
@@ -91,8 +93,10 @@ func main() {
 	sched := scheduler.NewScheduler(store, heartbeatTimeout, schedulerInterval)
 	go sched.Run(context.Background())
 
+	inventoryNotifier := inventoryclient.NewClient(inventoryURL, store)
+
 	workersHandler := &handlers.WorkersHandler{Store: store}
-	jobsHandler := &handlers.JobsHandler{Store: store, LeaseDuration: leaseDur}
+	jobsHandler := &handlers.JobsHandler{Store: store, LeaseDuration: leaseDur, InventoryNotifier: inventoryNotifier}
 	executionsHandler := &handlers.ExecutionsHandler{Store: store}
 
 	mux := http.NewServeMux()

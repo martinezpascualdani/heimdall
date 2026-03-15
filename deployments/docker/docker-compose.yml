@@ -157,10 +157,29 @@ services:
       TARGET_SERVICE_URL: http://target-service:8083
       PORT: "8085"
       INGEST_ENABLED: "true"
+      INVENTORY_SERVICE_URL: http://inventory-service:8086
     ports:
       - "8085:8085"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8085/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  inventory-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.inventory-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      INVENTORY_DB_DSN: postgres://heimdall:heimdall@postgres:5432/heimdall_inventory_service?sslmode=disable
+      PORT: "8086"
+    ports:
+      - "8086:8086"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8086/health"]
       interval: 5s
       timeout: 3s
       retries: 3
