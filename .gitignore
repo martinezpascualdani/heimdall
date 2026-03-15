@@ -9,6 +9,7 @@ configs/.env
 /scope-service
 /routing-service
 /target-service
+/campaign-service
 /heimdall
 /heimdallctl
 *.exe

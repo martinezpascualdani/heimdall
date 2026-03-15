@@ -18,6 +18,7 @@ Heimdall busca proporcionar una vista estructurada y actualizada del espacio IP 
 - **scope-service** — **Inventario de recursos asignados (RIR).** Importa bloques desde dataset-service (por `dataset_id`), los persiste y ofrece resolución IP→país, inventario por país (bloques, resumen, rangos ASN). Sync obtiene el último validado por registry e importa lo que falte. El inventario ASN refleja asignaciones delegadas por los RIR, no el estado BGP actual.
 - **routing-service** — **Estado de routing observado (BGP).** Importa CAIDA pfx2as y AS Organizations desde dataset-service. Ofrece IP→ASN (longest-prefix match), metadata ASN (org/nombre) y ASN→prefijos. Datos derivados de BGP, no de asignación.
 - **target-service** — Definiciones de targets (include/exclude por país, ASN, prefijo, world), materialización a snapshots CIDR y diff entre snapshots. Consume scope y routing. Snapshots inmutables. **Exclusión por prefijo (v1):** solo elimina prefijos materializados contenidos en el CIDR de exclusión; *no* hace sustracción CIDR ni subdivisión.
+- **campaign-service** — Plan de control de ejecución: campañas (target + perfil de escaneo, programación), perfiles de escaneo y runs. Despacha payloads de run a Redis Streams para workers. Programación: manual, once, interval. `/ready` exige DB y Redis.
 - **Tests** — Tests unitarios e de integración para parser, pipeline de importación, almacenamiento y handlers (pasan con Go y Postgres local opcional).
 
 ---
@@ -27,9 +28,9 @@ Heimdall busca proporcionar una vista estructurada y actualizada del espacio IP 
 ```
                          +------------------+
                          |   PostgreSQL     |
-                         | (4 DBs: datasets,|
+                         | (5 DBs: datasets,|
                          |  scope, routing, |
-                         |  target)         |
+                         |  target, campaign)|
                          +--------+---------+
                                   |
      +-----------------------------+-----------------------------+------------------+
@@ -41,17 +42,25 @@ Heimdall busca proporcionar una vista estructurada y actualizada del espacio IP 
 | version)|                                               |  material-|          |  asn,      |
 +----^----+                                               |  ize,     |          |  prefixes) |
      |                                                    |  diff)    |          +------------+
-     | FTP/HTTP (RIR)                                     +-----------+
-RIPE NCC, ARIN, APNIC, LACNIC, AFRINIC
-
-heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing  target
+     | FTP/HTTP (RIR)                                     +-----^-----+
+RIPE NCC, ARIN, APNIC, LACNIC, AFRINIC                            |
+                                                                   | HTTP
+                                                            +------v------+     +-------+
+                                                            | campaign-   |---->| Redis |
+                                                            | service     |     |Streams|
+                                                            | (campaigns, |     +---^---+
+                                                            |  runs,      |         |
+                                                            |  dispatch)  |     (workers)
+                                                            +-------------+
+heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing  target  campaign
 ```
 
 - **dataset-service**: Se conecta a FTP/HTTP de los RIR, parsea el formato RIR, guarda artefactos y metadatos en Postgres (`heimdall_datasets`). También descarga datasets CAIDA para routing.
 - **scope-service**: Obtiene artefactos de dataset-service, parsea y filtra bloques (país, IPv4/IPv6), los guarda en Postgres (`heimdall_scope_service`). Resuelve IPs y sirve el inventario por país usando un **snapshot lógico**: el último dataset importado de cada registry (RIPE, ARIN, APNIC, etc.) se combina en una vista coherente cuando no se indica `dataset_id`.
 - **routing-service**: Obtiene CAIDA (pfx2as, as-org) de dataset-service, guarda en Postgres (`heimdall_routing_service`). Expone IP→ASN (LPM), metadata ASN, ASN→prefijos.
 - **target-service**: Guarda definiciones de targets (reglas include/exclude por país, ASN, prefijo, world) en Postgres (`heimdall_target_service`). Materializa llamando a scope y routing, persiste snapshots CIDR inmutables. Diff entre snapshots. **World** = unión del inventario RIR por país (vista operativa). **Exclusión por prefijo:** v1 solo quita prefijos materializados contenidos en el CIDR de exclusión; no hay sustracción CIDR.
-- **heimdallctl**: CLI oficial; consulta dataset-, scope-, routing- y target-service por HTTP. Sin base de datos ni lógica de negocio; compilar con `go build -o bin/heimdallctl ./cmd/heimdallctl`.
+- **campaign-service**: Plan de control: campañas (target_id, scan_profile_id, programación manual/once/interval), perfiles de escaneo y runs. Persiste en Postgres (`heimdall_campaign_service`). Resuelve materialización vía target-service (use_latest o rematerialize), publica payloads de run a Redis Streams (`heimdall:campaign:runs`). Scheduler opcional crea runs para campañas debidas. `/ready` exige DB y Redis.
+- **heimdallctl**: CLI oficial; consulta dataset-, scope-, routing-, target- y campaign-service por HTTP. Sin base de datos ni lógica de negocio; compilar con `go build -o bin/heimdallctl ./cmd/heimdallctl`.
 
 ---
 
@@ -63,7 +72,9 @@ heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing  target
 | **scope-service**   | **Inventario RIR.** Importa bloques, IP→país, inventario país/ASN, sync | 8081                |
 | **routing-service** | **Estado de routing.** Importa pfx2as + as-org, IP→ASN (LPM), metadata ASN, ASN→prefijos | 8082                |
 | **target-service**  | Definiciones de targets, reglas, materialización a CIDR, snapshots y diff       | 8083          |
-| **PostgreSQL**      | Bases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service` | 5432   |
+| **campaign-service** | Plan de control: campañas, perfiles de escaneo, runs; dispatch a Redis Streams | 8084    |
+| **Redis**           | Stream `heimdall:campaign:runs` para dispatch de runs (consumen workers)       | 6379    |
+| **PostgreSQL**      | Bases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service` | 5432   |
 
 ---
 
@@ -86,10 +97,11 @@ docker compose up --build -d
 
 Se levantan:
 
-1. **Postgres** (puerto 5432), creando `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service` y `heimdall_target_service` en el primer arranque.
+1. **Postgres** (puerto 5432), creando `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service` y `heimdall_campaign_service` en el primer arranque.
 2. **dataset-service** (puerto 8080), cuando Postgres está listo.
 3. **scope-service** (puerto 8081) y **routing-service** (puerto 8082), cuando dataset-service está listo.
 4. **target-service** (puerto 8083), cuando scope y routing están listos.
+5. **Redis** (puerto 6379) y **campaign-service** (puerto 8084), cuando target-service está listo.
 
 Volúmenes: `postgres_data`, `dataset_artifacts`. No hace falta `.env`; todo está definido en `docker-compose.yml`.
 
@@ -157,11 +169,22 @@ Volúmenes: `postgres_data`, `dataset_artifacts`. No hace falta `.env`; todo est
 
    **Nota:** La exclusión por prefijo (v1) solo elimina prefijos materializados contenidos en el CIDR de exclusión; el servicio *no* hace sustracción ni subdivisión CIDR.
 
+7. **Campaign service** — Crear perfil de escaneo, campaña (target + perfil, programación), lanzar manualmente o dejar que el scheduler cree runs; los runs se despachan a Redis:
+
+   ```bash
+   curl -X POST "http://localhost:8084/v1/scan-profiles" -H "Content-Type: application/json" -d '{"name":"web-fast","slug":"web-fast"}'
+   # Usar el id del perfil devuelto y un target_id existente:
+   curl -X POST "http://localhost:8084/v1/campaigns" -H "Content-Type: application/json" -d '{"name":"Spain scan","target_id":"<target_id>","scan_profile_id":"<profile_id>","schedule_type":"manual","materialization_policy":"use_latest"}'
+   curl -X POST "http://localhost:8084/v1/campaigns/<campaign_id>/launch"
+   curl "http://localhost:8084/v1/campaigns/<campaign_id>/runs?limit=10"
+   curl "http://localhost:8084/ready"
+   ```
+
 ---
 
 ## Heimdallctl (CLI)
 
-**heimdallctl** es la CLI oficial para operar Heimdall. Se comunica con dataset-, scope- y routing-service por HTTP (sin lógica de negocio ni base de datos en la CLI). Salida legible por defecto; usa `-o json` para scripting.
+**heimdallctl** es la CLI oficial para operar Heimdall. Se comunica con dataset-, scope-, routing-, target- y campaign-service por HTTP (sin lógica de negocio ni base de datos en la CLI). Salida legible por defecto; usa `-o json` para scripting.
 
 **Compilar:** (el binario no se sube al repo; usa `bin/` o la ruta que prefieras)
 
@@ -169,12 +192,12 @@ Volúmenes: `postgres_data`, `dataset_artifacts`. No hace falta `.env`; todo est
 mkdir -p bin && go build -o bin/heimdallctl ./cmd/heimdallctl
 ```
 
-**Configuración:** Las variables de entorno tienen prioridad sobre los archivos de configuración. URLs base por defecto: `http://localhost:8080` (dataset), `http://localhost:8081` (scope), `http://localhost:8082` (routing), `http://localhost:8083` (target). Archivo opcional: `~/.config/heimdall/config.yaml` o `.heimdall.yaml` en el directorio actual. Variables: `HEIMDALL_DATASET_URL`, `HEIMDALL_SCOPE_URL`, `HEIMDALL_ROUTING_URL`, `HEIMDALL_TARGET_URL`, `HEIMDALL_TIMEOUT` (segundos).
+**Configuración:** Las variables de entorno tienen prioridad sobre los archivos de configuración. URLs base por defecto: `http://localhost:8080` (dataset), `http://localhost:8081` (scope), `http://localhost:8082` (routing), `http://localhost:8083` (target), `http://localhost:8084` (campaign). Archivo opcional: `~/.config/heimdall/config.yaml` o `.heimdall.yaml` en el directorio actual. Variables: `HEIMDALL_DATASET_URL`, `HEIMDALL_SCOPE_URL`, `HEIMDALL_ROUTING_URL`, `HEIMDALL_TARGET_URL`, `HEIMDALL_CAMPAIGN_URL`, `HEIMDALL_TIMEOUT` (segundos).
 
 **Ejemplos:**
 
 ```bash
-# Estado de los cuatro servicios
+# Estado de todos los servicios (dataset, scope, routing, target, campaign)
 heimdallctl status
 
 # Dataset: fetch (RIR o CAIDA), list, get
@@ -207,6 +230,18 @@ heimdallctl target materialize <target-id>
 heimdallctl target materializations <target-id>
 heimdallctl target prefixes <target-id> <materialization-id>
 heimdallctl target diff <target-id> --from <mid1> --to <mid2>
+
+# Campaign: list, create, launch, runs; scan-profile list/create; run get/cancel
+heimdallctl campaign list
+heimdallctl campaign create --name "Spain scan" --target-id <tid> --scan-profile-id <pid> --schedule-type manual --materialization-policy use_latest
+heimdallctl campaign get <campaign-id>
+heimdallctl campaign launch <campaign-id>
+heimdallctl campaign runs <campaign-id>
+heimdallctl campaign run get <run-id>
+heimdallctl campaign run cancel <run-id>
+heimdallctl scan-profile list
+heimdallctl scan-profile create --name "web-fast" --slug web-fast
+heimdallctl scan-profile get <profile-id>
 
 # Salida JSON para scripting
 heimdallctl status -o json
@@ -269,7 +304,27 @@ Consulta las especificaciones OpenAPI de cada servicio (`api/openapi/*.yaml`) pa
 | GET | `/v1/targets/{id}/materializations/diff?from=&to=` | Diff entre dos snapshots (mismo target). |
 | GET | `/health`, `/ready`, `/version` | Salud y versión. |
 
-Especificaciones OpenAPI: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`, `api/openapi/routing-service.yaml`, `api/openapi/target-service.yaml`.
+### campaign-service (puerto 8084)
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/v1/scan-profiles` | Crear perfil de escaneo (name, slug). |
+| GET | `/v1/scan-profiles` | Listar perfiles (limit, offset). |
+| GET | `/v1/scan-profiles/{id}` | Obtener perfil. |
+| PUT | `/v1/scan-profiles/{id}` | Actualizar perfil (reemplazo completo). |
+| DELETE | `/v1/scan-profiles/{id}` | Borrar (rechazado si campañas lo usan). |
+| POST | `/v1/campaigns` | Crear campaña (target_id, scan_profile_id, schedule_type, materialization_policy). |
+| GET | `/v1/campaigns` | Listar campañas (include_inactive, limit, offset). |
+| GET | `/v1/campaigns/{id}` | Obtener campaña. |
+| PUT | `/v1/campaigns/{id}` | Actualizar campaña (reemplazo completo). |
+| DELETE | `/v1/campaigns/{id}` | Soft delete. |
+| POST | `/v1/campaigns/{id}/launch` | Lanzar campaña (crear run, dispatch a Redis). |
+| GET | `/v1/campaigns/{id}/runs` | Listar runs (limit, offset). |
+| GET | `/v1/runs/{id}` | Obtener run. |
+| POST | `/v1/runs/{id}/cancel` | Cancelar run. |
+| GET | `/health`, `/ready`, `/version` | Salud, readiness (DB+Redis), versión. |
+
+Especificaciones OpenAPI: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`, `api/openapi/routing-service.yaml`, `api/openapi/target-service.yaml`, `api/openapi/campaign-service.yaml`.
 
 ---
 
@@ -282,11 +337,12 @@ Especificaciones OpenAPI: `api/openapi/dataset-service.yaml`, `api/openapi/scope
    CREATE DATABASE heimdall_scope_service;
    CREATE DATABASE heimdall_routing_service;
    CREATE DATABASE heimdall_target_service;
+   CREATE DATABASE heimdall_campaign_service;
    ```
 
 2. **Entorno:** Copiar `configs/.env.example` a `.env` y configurar DSNs, puertos y `DATASET_SERVICE_URL` (ver comentarios en el ejemplo).
 
-3. **Ejecutar (cuatro terminales):**
+3. **Ejecutar (cinco terminales):**
 
    ```bash
    # Terminal 1 – dataset-service (PORT=8080)
@@ -300,6 +356,9 @@ Especificaciones OpenAPI: `api/openapi/dataset-service.yaml`, `api/openapi/scope
 
    # Terminal 4 – target-service (PORT=8083; necesita scope + routing)
    go run ./cmd/target-service
+
+   # Terminal 5 – campaign-service (PORT=8084; necesita target-service, Postgres, Redis)
+   go run ./cmd/campaign-service
    ```
 
 4. **Tests:**

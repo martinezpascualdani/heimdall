@@ -209,8 +209,8 @@ func PrintASNPrefixes(w io.Writer, r *client.RoutingASNPrefixesResponse) {
 	fmt.Fprintln(w)
 }
 
-// PrintStatus writes health status of dataset, scope, routing, and target services.
-func PrintStatus(w io.Writer, dataset, scope, routing, target client.HealthResult) {
+// PrintStatus writes health status of dataset, scope, routing, target, and campaign services.
+func PrintStatus(w io.Writer, dataset, scope, routing, target, campaign client.HealthResult) {
 	section(w, "Service status")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "  SERVICE\tSTATUS\tDETAIL")
@@ -219,6 +219,7 @@ func PrintStatus(w io.Writer, dataset, scope, routing, target client.HealthResul
 	statusRow("scope", scope, tw)
 	statusRow("routing", routing, tw)
 	statusRow("target", target, tw)
+	statusRow("campaign", campaign, tw)
 	tw.Flush()
 	fmt.Fprintln(w)
 }
@@ -497,6 +498,137 @@ func PrintTargetDiff(w io.Writer, r *client.TargetDiffResponse) {
 		for _, p := range r.Removed {
 			fmt.Fprintf(w, "    - %s\n", p)
 		}
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintScanProfileList writes scan profiles table.
+func PrintScanProfileList(w io.Writer, r *client.ScanProfileListResponse) {
+	if r == nil || len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No scan profiles.")
+		return
+	}
+	section(w, "Scan profiles")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tNAME\tSLUG\tCREATED_AT")
+	fmt.Fprintln(tw, "  ──\t────\t────\t──────────")
+	for _, p := range r.Items {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", p.ID, p.Name, p.Slug, p.CreatedAt)
+	}
+	tw.Flush()
+	if r.HasMore {
+		fmt.Fprintf(w, "\n  … more (total %d)\n", r.Total)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintScanProfileGet writes a single scan profile.
+func PrintScanProfileGet(w io.Writer, p *client.ScanProfileResponse) {
+	if p == nil {
+		return
+	}
+	section(w, "Scan profile · "+p.Slug)
+	kv(w, "ID", p.ID)
+	kv(w, "Name", p.Name)
+	kv(w, "Slug", p.Slug)
+	kv(w, "Description", p.Description)
+	kv(w, "Created", p.CreatedAt)
+	kv(w, "Updated", p.UpdatedAt)
+	fmt.Fprintln(w)
+}
+
+// PrintCampaignList writes campaigns table.
+func PrintCampaignList(w io.Writer, r *client.CampaignListResponse) {
+	if r == nil || len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No campaigns.")
+		return
+	}
+	section(w, "Campaigns")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tNAME\tSCHEDULE\tMAT_POLICY\tACTIVE\tCREATED_AT")
+	fmt.Fprintln(tw, "  ──\t────\t────────\t──────────\t──────\t──────────")
+	for _, c := range r.Items {
+		active := "no"
+		if c.Active {
+			active = "yes"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", c.ID, c.Name, c.ScheduleType, c.MaterializationPolicy, active, c.CreatedAt)
+	}
+	tw.Flush()
+	if r.HasMore {
+		fmt.Fprintf(w, "\n  … more (total %d)\n", r.Total)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintCampaignGet writes a single campaign.
+func PrintCampaignGet(w io.Writer, c *client.CampaignResponse) {
+	if c == nil {
+		return
+	}
+	section(w, "Campaign · "+c.Name)
+	kv(w, "ID", c.ID)
+	kv(w, "Name", c.Name)
+	kv(w, "Description", c.Description)
+	kv(w, "Target ID", c.TargetID)
+	kv(w, "Scan profile ID", c.ScanProfileID)
+	kv(w, "Schedule type", c.ScheduleType)
+	kv(w, "Materialization policy", c.MaterializationPolicy)
+	kv(w, "Concurrency policy", c.ConcurrencyPolicy)
+	kv(w, "Active", fmt.Sprintf("%v", c.Active))
+	kv(w, "Run once done", fmt.Sprintf("%v", c.RunOnceDone))
+	if c.NextRunAt != "" {
+		kv(w, "Next run at", c.NextRunAt)
+	}
+	kv(w, "Created", c.CreatedAt)
+	kv(w, "Updated", c.UpdatedAt)
+	fmt.Fprintln(w)
+}
+
+// PrintCampaignRunList writes runs table.
+func PrintCampaignRunList(w io.Writer, r *client.CampaignRunListResponse) {
+	if r == nil || len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No runs.")
+		return
+	}
+	section(w, "Runs")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tSTATUS\tDISPATCH_REF\tMAT_ID\tCREATED_AT")
+	fmt.Fprintln(tw, "  ──\t──────\t────────────\t──────\t──────────")
+	for _, run := range r.Items {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", run.ID, run.Status, run.DispatchRef, run.TargetMaterializationID, run.CreatedAt)
+	}
+	tw.Flush()
+	if r.HasMore {
+		fmt.Fprintf(w, "\n  … more (total %d)\n", r.Total)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintCampaignRunGet writes a single run (or launch result).
+func PrintCampaignRunGet(w io.Writer, r *client.CampaignRunResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Run · "+r.ID)
+	kv(w, "ID", r.ID)
+	kv(w, "Campaign ID", r.CampaignID)
+	kv(w, "Status", r.Status)
+	kv(w, "Target ID", r.TargetID)
+	kv(w, "Target materialization ID", r.TargetMaterializationID)
+	kv(w, "Scan profile slug", r.ScanProfileSlug)
+	kv(w, "Dispatch ref", r.DispatchRef)
+	if r.CreatedAt != "" {
+		kv(w, "Created", r.CreatedAt)
+	}
+	if r.DispatchedAt != "" {
+		kv(w, "Dispatched at", r.DispatchedAt)
+	}
+	if r.ErrorMessage != "" {
+		kv(w, "Error", r.ErrorMessage)
+	}
+	if r.Stats != nil {
+		kv(w, "Stats", fmt.Sprintf("%v", r.Stats))
 	}
 	fmt.Fprintln(w)
 }

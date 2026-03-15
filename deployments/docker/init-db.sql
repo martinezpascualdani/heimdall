@@ -9,3 +9,5 @@ CREATE DATABASE heimdall_datasets_test;
 CREATE DATABASE heimdall_scope_service_test;
 CREATE DATABASE heimdall_routing_service_test;
 CREATE DATABASE heimdall_target_service_test;
+CREATE DATABASE heimdall_campaign_service;
+CREATE DATABASE heimdall_campaign_service_test;

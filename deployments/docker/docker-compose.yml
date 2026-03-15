@@ -103,6 +103,41 @@ services:
       timeout: 3s
       retries: 3
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  campaign-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.campaign-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      target-service:
+        condition: service_healthy
+    environment:
+      CAMPAIGN_DB_DSN: postgres://heimdall:heimdall@postgres:5432/heimdall_campaign_service?sslmode=disable
+      REDIS_ADDR: redis:6379
+      TARGET_SERVICE_URL: http://target-service:8083
+      PORT: "8084"
+      CAMPAIGN_SCHEDULER_ENABLED: "true"
+    ports:
+      - "8084:8084"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8084/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
 volumes:
   postgres_data:
   dataset_artifacts:

@@ -1,0 +1,462 @@
+openapi: 3.0.3
+info:
+  title: Heimdall Campaign Service API
+  version: 0.1.0
+  description: |
+    **campaign-service:** Control plane for execution. Campaigns, scan profiles, and runs.
+    Dispatches run payloads to Redis Streams; workers (data plane) consume them.
+    **v1:** Service only guarantees run states up to `dispatched`; exception: `completed` for 0-prefix (noop) runs.
+    **ready:** Requires DB and Redis; target-service not required for ready.
+
+paths:
+  /health:
+    get:
+      summary: Liveness
+      operationId: health
+      responses:
+        '200':
+          description: OK
+  /ready:
+    get:
+      summary: Readiness
+      description: false if DB or Redis unavailable.
+      operationId: ready
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: Not ready
+  /version:
+    get:
+      summary: Version
+      operationId: version
+      responses:
+        '200':
+          description: version and build_time
+
+  /v1/campaigns:
+    post:
+      summary: Create campaign
+      operationId: createCampaign
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampaignRequest'
+      responses:
+        '201':
+          description: Campaign created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '400':
+          description: Invalid body or target/scan_profile not found
+    get:
+      summary: List campaigns
+      description: By default only active. Use include_inactive=true.
+      operationId: listCampaigns
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: include_inactive
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Paginated list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignListResponse'
+
+  /v1/campaigns/{id}:
+    get:
+      summary: Get campaign
+      operationId: getCampaign
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Campaign
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '404':
+          description: Not found
+    put:
+      summary: Update campaign (full replacement)
+      operationId: updateCampaign
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCampaignRequest'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignResponse'
+        '404':
+          description: Not found
+    delete:
+      summary: Soft delete campaign
+      description: Sets active=false. Idempotent. Runs preserved.
+      operationId: deleteCampaign
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deleted
+
+  /v1/campaigns/{id}/launch:
+    post:
+      summary: Launch campaign manually
+      description: Creates run, resolves materialization, dispatches to Redis (or completed if 0 prefixes). Respects concurrency_policy. For schedule_type once, sets run_once_done.
+      operationId: launchCampaign
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Run created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignRunResponse'
+        '404':
+          description: Campaign not found
+        '409':
+          description: Campaign has active run (forbid_if_active)
+
+  /v1/campaigns/{id}/runs:
+    get:
+      summary: List runs for campaign
+      operationId: listCampaignRuns
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated runs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunListResponse'
+
+  /v1/runs/{id}:
+    get:
+      summary: Get run
+      operationId: getRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignRunResponse'
+        '404':
+          description: Not found
+  /v1/runs/{id}/cancel:
+    post:
+      summary: Cancel run
+      description: Marks run canceled in source of truth. Effective respect depends on data plane.
+      operationId: cancelRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Canceled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignRunResponse'
+        '404':
+          description: Not found
+        '400':
+          description: Run not in cancelable state
+
+  /v1/scan-profiles:
+    post:
+      summary: Create scan profile
+      operationId: createScanProfile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScanProfileRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanProfileResponse'
+        '409':
+          description: Slug exists
+    get:
+      summary: List scan profiles
+      operationId: listScanProfiles
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanProfileListResponse'
+
+  /v1/scan-profiles/{id}:
+    get:
+      summary: Get scan profile
+      operationId: getScanProfile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Scan profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanProfileResponse'
+        '404':
+          description: Not found
+    put:
+      summary: Update scan profile (full replacement)
+      operationId: updateScanProfile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScanProfileRequest'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanProfileResponse'
+        '404':
+          description: Not found
+    delete:
+      summary: Delete scan profile
+      description: Rejected if any campaign uses it. No soft delete in v1.
+      operationId: deleteScanProfile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: Not found
+        '409':
+          description: Campaigns use this profile
+
+components:
+  schemas:
+    CreateCampaignRequest:
+      type: object
+      required:
+        - name
+        - target_id
+        - scan_profile_id
+        - schedule_type
+        - materialization_policy
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        target_id:
+          type: string
+          format: uuid
+        scan_profile_id:
+          type: string
+          format: uuid
+        schedule_type:
+          type: string
+          enum: [manual, once, interval]
+        schedule_config:
+          type: object
+          description: For interval e.g. {"interval_seconds": 86400} or {"interval_hours": 24}
+        materialization_policy:
+          type: string
+          enum: [use_latest, rematerialize]
+        next_run_at:
+          type: string
+          format: date-time
+          description: Optional; for once/interval defaults to now
+        concurrency_policy:
+          type: string
+          enum: [allow, forbid_if_active]
+          default: allow
+    CampaignResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        active: { type: boolean }
+        target_id: { type: string, format: uuid }
+        scan_profile_id: { type: string, format: uuid }
+        schedule_type: { type: string }
+        schedule_config: { type: object }
+        materialization_policy: { type: string }
+        next_run_at: { type: string, format: date-time }
+        run_once_done: { type: boolean }
+        concurrency_policy: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CampaignListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CampaignResponse' } }
+        count: { type: integer }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        has_more: { type: boolean }
+
+    CreateScanProfileRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        config: { type: object }
+    ScanProfileResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        config: { type: object }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ScanProfileListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ScanProfileResponse' } }
+        count: { type: integer }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        has_more: { type: boolean }
+
+    CampaignRunResponse:
+      type: object
+      description: prefix_count in stats is set by control plane before dispatch.
+      properties:
+        id: { type: string, format: uuid }
+        campaign_id: { type: string, format: uuid }
+        target_id: { type: string, format: uuid }
+        target_materialization_id: { type: string, format: uuid }
+        scan_profile_id: { type: string, format: uuid }
+        scan_profile_slug: { type: string }
+        scan_profile_config_snapshot: { type: object }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        dispatched_at: { type: string, format: date-time }
+        dispatch_ref: { type: string }
+        error_message: { type: string }
+        stats: { type: object }
+    RunListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CampaignRunResponse' } }
+        count: { type: integer }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        has_more: { type: boolean }
