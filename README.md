@@ -25,27 +25,31 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 ## Architecture (current)
 
 ```
-                    +------------------+
-                    |   PostgreSQL     |
-                    | (3 DBs: datasets|
-                    |  scope, routing)|
-                    +--------+---------+
-                             |
-         +-------------------+-------------------+
-         |                                       |
-  +------v------+                      +--------v--------+
-  | dataset-    |   HTTP (artifact      | scope-service   |
-  | service     |   + metadata)         | (import, query, |
-  | (fetch,     |<---------------------|  by-ip, country)|
-  |  version)   |                       +----------------+
-  +-------------+
-         ^
-         | FTP/HTTP (RIR)
+                         +------------------+
+                         |   PostgreSQL     |
+                         | (3 DBs: datasets,|
+                         |  scope, routing) |
+                         +--------+---------+
+                                  |
+          +-----------------------+-----------------------+
+          |                       |                       |
+   +------v------+         +------v------+         +------v------+
+   | dataset-    |  HTTP   | scope-      |         | routing-    |
+   | service     |<--------| service     |         | service     |
+   | (fetch,     |         | (import,    |         | (by-ip,     |
+   |  version)   |         |  by-ip,     |         |  asn,       |
+   +------^------+         |  country)   |         |  prefixes)  |
+          |                +------------+         +-------------+
+          | FTP/HTTP (RIR)
     RIPE NCC, ARIN, APNIC, LACNIC, AFRINIC
+
+    heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing
 ```
 
-- **dataset-service**: Talks to RIR FTP/HTTP, parses RIR format, stores artifacts and metadata in Postgres (`heimdall_datasets`).
+- **dataset-service**: Talks to RIR FTP/HTTP, parses RIR format, stores artifacts and metadata in Postgres (`heimdall_datasets`). Also fetches CAIDA datasets for routing.
 - **scope-service**: Pulls artifacts from dataset-service, parses and filters blocks (country, IPv4/IPv6), stores in Postgres (`heimdall_scope_service`). Resolves IPs and serves country inventory using a **logical snapshot**: the latest imported dataset from each registry (RIPE, ARIN, APNIC, etc.) is combined into one coherent view when no `dataset_id` is given.
+- **routing-service**: Pulls CAIDA (pfx2as, as-org) from dataset-service, stores in Postgres (`heimdall_routing_service`). Exposes IP→ASN (LPM), ASN metadata, ASN→prefixes.
+- **heimdallctl**: Official CLI; queries dataset-, scope-, and routing-service over HTTP. No database or business logic; build with `go build -o bin/heimdallctl ./cmd/heimdallctl`.
 
 ---
 
