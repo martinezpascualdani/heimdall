@@ -186,6 +186,24 @@ services:
       CLAIM_INTERVAL: 5s
     restart: unless-stopped
 
+  # CLI: no Go required on host. Use: docker compose run heimdallctl install | status | execution list | ...
+  heimdallctl:
+    profiles:
+      - cli
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.heimdallctl
+    environment:
+      HEIMDALL_DATASET_URL: http://dataset-service:8080
+      HEIMDALL_SCOPE_URL: http://scope-service:8081
+      HEIMDALL_ROUTING_URL: http://routing-service:8082
+      HEIMDALL_TARGET_URL: http://target-service:8083
+      HEIMDALL_CAMPAIGN_URL: http://campaign-service:8084
+      HEIMDALL_EXECUTION_URL: http://execution-service:8085
+    # Optional: mount config (e.g. ~/.config/heimdall/config.yaml) if you need custom URLs when running from host
+    # volumes:
+    #   - ./config.yaml:/app/.config/heimdall/config.yaml:ro
+
 volumes:
   postgres_data:
   dataset_artifacts:

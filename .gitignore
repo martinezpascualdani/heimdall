@@ -10,6 +10,7 @@ configs/.env
 /routing-service
 /target-service
 /campaign-service
+/execution-service
 /heimdall
 /heimdallctl
 *.exe
