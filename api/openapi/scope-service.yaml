@@ -1,0 +1,519 @@
+openapi: 3.0.3
+info:
+  title: Heimdall Scope Service API
+  version: 0.1.0
+  description: Scope resolution and IP-to-country lookup.
+
+paths:
+  /v1/import:
+    post:
+      summary: Import a dataset into scope-service
+      description: Fetches the artifact from dataset-service for the given dataset_id, parses it, filters by country and status (allocated/assigned), and persists blocks. Idempotent by dataset_id + config. Registry is stored for "latest per registry" resolution.
+      operationId: importDataset
+      parameters:
+        - name: dataset_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Dataset version ID (from dataset-service) to import
+      responses:
+        '201':
+          description: Dataset imported (blocks persisted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+        '200':
+          description: Already imported or idempotent result (e.g. already_imported)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+        '400':
+          description: dataset_id missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                required:
+                  value: { error: "dataset_id required" }
+                invalid:
+                  value: { error: "invalid dataset_id" }
+        '500':
+          description: Internal error during import
+
+  /v1/imports/sync:
+    post:
+      summary: Sync imports from dataset-service (batch)
+      description: |
+        Consults dataset-service for the latest validated dataset per registry,
+        imports each into scope-service if not already imported, and returns a summary.
+        Avoids the manual flow of fetch -> list -> copy UUID -> import one by one.
+      operationId: syncImports
+      responses:
+        '200':
+          description: Sync completed; one result per registry (imported, already_imported, or failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        '502':
+          description: dataset-service unreachable or returned error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/scopes/by-ip/{ip}:
+    get:
+      summary: Resolve IP to scope (country)
+      description: Resolves an IP to its scope (country). When dataset_id is omitted, uses the latest imported dataset per registry (global snapshot across RIRs). With dataset_id, uses that snapshot only. Belongs under scopes namespace (resolve by IP input).
+      operationId: resolveScopeByIP
+      parameters:
+        - name: ip
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ip
+          description: IPv4 or IPv6 address
+        - name: dataset_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Optional dataset ID to resolve against; if omitted, latest imported dataset is used
+      responses:
+        '200':
+          description: IP resolved to a scope (country)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IPResolveResponse'
+        '400':
+          description: Invalid IP format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: invalid_ip
+        '404':
+          description: IP not found in any block
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: ip_not_found
+        '503':
+          description: No dataset available (no import completed yet)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: no_dataset_available
+
+  /v1/scopes/country/{cc}/blocks:
+    get:
+      summary: List blocks for a country scope
+      description: Returns a paginated list of IP blocks for the given country (ISO 3166-1 alpha-2). When dataset_id is omitted, uses the global snapshot (latest import per registry) and aggregates all blocks with that cc from every RIR; response includes datasets_used (snapshots used). With dataset_id, uses that single snapshot. dataset_id/registry/serial at top level are present only when a single snapshot is used (backward compat). address_family filters by ipv4 or ipv6. limit=0 returns only metadata and total. Items are ordered by address_family, then by start IP in numeric order (not lexicographic), then block_raw_identity. has_more is true when offset + count < total.
+      operationId: listCountryBlocks
+      parameters:
+        - name: cc
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 2
+            example: ES
+          description: ISO 3166-1 alpha-2 country code
+        - name: dataset_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: address_family
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ipv4, ipv6]
+          description: Filter by address family (case-insensitive)
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100000
+            default: 1000
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated blocks (may be empty when total=0 or offset >= total)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlocksResponse'
+        '400':
+          description: Invalid country code, dataset_id, address_family, or limit/offset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_country_code:
+                  value: { error: invalid_country_code }
+                invalid_dataset_id:
+                  value: { error: invalid_dataset_id }
+                invalid_address_family:
+                  value: { error: invalid_address_family }
+                invalid_limit_or_offset:
+                  value: { error: invalid_limit_or_offset }
+        '404':
+          description: dataset_id is valid but not imported in scope-service
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: dataset_not_imported
+        '503':
+          description: No dataset available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: no_dataset_available
+
+  /v1/scopes/country/{cc}/summary:
+    get:
+      summary: Summary of blocks for a country scope
+      description: Returns block counts by address family (ipv4, ipv6) and total. When dataset_id is omitted, uses the global snapshot (latest import per registry) and aggregates counts for that cc from every RIR; response includes datasets_used. With dataset_id, uses that single snapshot. dataset_id/registry/serial at top level are present only when a single snapshot is used. Does not accept address_family filter; always returns combined summary.
+      operationId: getCountrySummary
+      parameters:
+        - name: cc
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 2
+            example: ES
+        - name: dataset_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Summary with ipv4_block_count, ipv6_block_count, total
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummaryResponse'
+        '400':
+          description: Invalid country code or dataset_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: dataset_id not imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: dataset_not_imported
+        '503':
+          description: No dataset available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: no_dataset_available
+
+  /v1/scopes/country/{cc}/datasets:
+    get:
+      summary: List imported datasets for a country scope
+      description: Returns snapshots (imports) that have blocks for this country, ordered by created_at descending. dataset_id and created_at are required per item; registry and serial optional (may be empty if enrichment fails).
+      operationId: listCountryDatasets
+      parameters:
+        - name: cc
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 2
+            example: ES
+      responses:
+        '200':
+          description: List of dataset snapshots
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetsResponse'
+        '400':
+          description: Invalid country code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: invalid_country_code
+
+components:
+  schemas:
+    ImportResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          description: imported | already_imported | failed | reimported_forced
+        import_id:
+          type: string
+          format: uuid
+        dataset_id:
+          type: string
+          format: uuid
+        blocks_persisted:
+          type: integer
+          format: int64
+        duration_ms:
+          type: integer
+          format: int64
+        error:
+          type: string
+    SyncResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncResultItem'
+    SyncResultItem:
+      type: object
+      properties:
+        registry:
+          type: string
+          description: RIR identifier (e.g. ripencc, arin, apnic, lacnic, afrinic)
+        dataset_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: imported | already_imported | failed
+        blocks_persisted:
+          type: integer
+          format: int64
+        duration_ms:
+          type: integer
+          format: int64
+        error:
+          type: string
+    IPResolveResponse:
+      type: object
+      required:
+        - ip
+        - scope_type
+        - scope_value
+        - dataset_id
+      properties:
+        ip:
+          type: string
+          format: ip
+        scope_type:
+          type: string
+          example: country
+        scope_value:
+          type: string
+          example: US
+        dataset_id:
+          type: string
+          format: uuid
+        registry:
+          type: string
+          description: RIR registry (e.g. arin, ripencc); optional, from dataset metadata
+        serial:
+          type: string
+          description: Dataset serial as string; optional, from dataset metadata
+    DatasetUsedItem:
+      type: object
+      description: One snapshot used in the response (when aggregating from multiple RIRs).
+      properties:
+        dataset_id:
+          type: string
+          format: uuid
+        registry:
+          type: string
+          description: Internal registry id (e.g. ripencc, apnic)
+        serial:
+          type: string
+    BlocksResponse:
+      type: object
+      required:
+        - scope_type
+        - scope_value
+        - datasets_used
+        - address_family
+        - count
+        - total
+        - limit
+        - offset
+        - has_more
+        - items
+      properties:
+        scope_type:
+          type: string
+          example: country
+        scope_value:
+          type: string
+          example: ES
+        datasets_used:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetUsedItem'
+          description: Snapshots used (one when dataset_id query param; multiple when global snapshot)
+        dataset_id:
+          type: string
+          format: uuid
+          description: Present only when a single snapshot is used (backward compat)
+        registry:
+          type: string
+          description: Present only when a single snapshot is used
+        serial:
+          type: string
+          description: Serial as string; optional
+        address_family:
+          type: string
+          enum: [all, ipv4, ipv6]
+        count:
+          type: integer
+          description: Number of items in this page
+        total:
+          type: integer
+          description: Total count before pagination
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+          description: true when offset + count < total (convenience for clients)
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlockItem'
+    BlockItem:
+      type: object
+      required:
+        - address_family
+        - raw_start
+        - raw_value
+        - status
+        - normalized
+      properties:
+        address_family:
+          type: string
+          enum: [ipv4, ipv6]
+        raw_start:
+          type: string
+        raw_value:
+          type: string
+        status:
+          type: string
+        normalized:
+          type: array
+          items:
+            type: string
+          description: Array of CIDR strings; empty if no normalization
+    SummaryResponse:
+      type: object
+      required:
+        - scope_type
+        - scope_value
+        - datasets_used
+        - ipv4_block_count
+        - ipv6_block_count
+        - total
+      properties:
+        scope_type:
+          type: string
+          example: country
+        scope_value:
+          type: string
+          example: ES
+        datasets_used:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetUsedItem'
+        dataset_id:
+          type: string
+          format: uuid
+          description: Present only when a single snapshot is used
+        registry:
+          type: string
+        serial:
+          type: string
+        ipv4_block_count:
+          type: integer
+        ipv6_block_count:
+          type: integer
+        total:
+          type: integer
+          description: ipv4_block_count + ipv6_block_count
+    DatasetsResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetItem'
+    DatasetItem:
+      type: object
+      required:
+        - dataset_id
+        - created_at
+      properties:
+        dataset_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        registry:
+          type: string
+          description: Optional; empty if enrichment fails
+        serial:
+          type: string
+          description: Optional; empty if enrichment fails
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string

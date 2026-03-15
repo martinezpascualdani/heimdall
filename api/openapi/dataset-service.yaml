@@ -1,0 +1,172 @@
+openapi: 3.0.3
+info:
+  title: Heimdall Dataset Service API
+  version: 0.1.0
+  description: RIR dataset fetch, storage and artifact access.
+
+paths:
+  /v1/datasets/fetch:
+    post:
+      summary: Fetch latest dataset for a registry
+      description: Downloads and validates the latest delegated file for the given RIR. If registry is omitted or "all", fetches all five RIRs (ripencc, arin, apnic, lacnic, afrinic). Idempotent by registry+serial.
+      operationId: fetchDatasets
+      parameters:
+        - name: registry
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ripencc, arin, apnic, lacnic, afrinic, all]
+          description: RIR to fetch; omit or "all" to fetch all five
+      responses:
+        '200':
+          description: Fetch completed (single registry or all)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/FetchResultSingle'
+                  - $ref: '#/components/schemas/FetchResultAll'
+        '201':
+          description: New dataset created (single registry)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FetchResultSingle'
+        '400':
+          description: Unsupported registry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/datasets:
+    get:
+      summary: List dataset versions
+      description: Returns a list of dataset versions (e.g. last 100).
+      operationId: listDatasets
+      responses:
+        '200':
+          description: List of datasets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetList'
+
+  /v1/datasets/{id}:
+    get:
+      summary: Get dataset metadata
+      description: Returns metadata for a single dataset version by ID.
+      operationId: getDataset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Dataset metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetVersion'
+        '400':
+          description: Invalid ID
+        '404':
+          description: Dataset not found
+
+  /v1/datasets/{id}/artifact:
+    get:
+      summary: Get dataset artifact (raw file)
+      description: Streams the raw delegated file content. Only available when state is validated and artifact exists.
+      operationId: getDatasetArtifact
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Raw file content (text/plain)
+          content:
+            text/plain:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Dataset not found or artifact not available
+
+components:
+  schemas:
+    FetchResultSingle:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [existing, created, rejected, failed]
+        dataset_id:
+          type: string
+          format: uuid
+        registry:
+          type: string
+        serial:
+          type: integer
+          format: int64
+        state:
+          type: string
+        error:
+          type: string
+    FetchResultAll:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/FetchResultSingle'
+    DatasetList:
+      type: object
+      properties:
+        datasets:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetVersion'
+    DatasetVersion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        registry:
+          type: string
+        serial:
+          type: integer
+          format: int64
+        start_date:
+          type: string
+        end_date:
+          type: string
+        record_count:
+          type: integer
+          format: int64
+        checksum:
+          type: string
+        state:
+          type: string
+          enum: [fetching, fetched, validated, rejected, failed]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        error:
+          type: string
+    Error:
+      type: object
+      properties:
+        error:
+          type: string

@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: heimdall
+      POSTGRES_PASSWORD: heimdall
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init-databases.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heimdall -d postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  dataset-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.dataset-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATASET_DB_DSN: postgres://heimdall:heimdall@postgres:5432/heimdall_datasets?sslmode=disable
+      DATASET_STORAGE_PATH: /data/datasets
+      PORT: "8080"
+    volumes:
+      - dataset_artifacts:/data/datasets
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  scope-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.scope-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dataset-service:
+        condition: service_healthy
+    environment:
+      SCOPE_DB_DSN: postgres://heimdall:heimdall@postgres:5432/heimdall_scope_service?sslmode=disable
+      DATASET_SERVICE_URL: http://dataset-service:8080
+      PORT: "8081"
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  postgres_data:
+  dataset_artifacts:

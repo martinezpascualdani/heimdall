@@ -1,0 +1,45 @@
+# Environment (never commit secrets)
+.env
+.env.local
+.env.*.local
+configs/.env
+
+# Binaries (root only; do not ignore cmd/dataset-service or cmd/scope-service)
+/dataset-service
+/scope-service
+/heimdall
+*.exe
+bin/
+
+# Downloaded artifacts and local data
+data/
+*.delegated-*
+/deployments/docker/data/
+
+# Local DB files and volumes (if running outside Docker)
+*.db
+*.sqlite
+
+# Logs
+*.log
+logs/
+
+# Go
+vendor/
+*.test
+coverage.out
+*.out
+
+# Docker
+.docker/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Editor / project local
+.cursor/
