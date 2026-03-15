@@ -1,0 +1,389 @@
+package output
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/martinezpascualdani/heimdall/internal/heimdallctl/client"
+)
+
+const labelWidth = 18
+
+// kv prints one key-value line with aligned label (for human-readable blocks).
+func kv(w io.Writer, label, value string) {
+	fmt.Fprintf(w, "  %-*s  %s\n", labelWidth, label+":", value)
+}
+
+// kvInt prints a key-value line for an integer.
+func kvInt(w io.Writer, label string, value int64) {
+	fmt.Fprintf(w, "  %-*s  %d\n", labelWidth, label+":", value)
+}
+
+// section prints a section title with a simple visual separator.
+func section(w io.Writer, title string) {
+	fmt.Fprintf(w, "  %s\n  %s\n\n", title, strings.Repeat("─", len(title)+2))
+}
+
+// PrintJSON encodes v as JSON to w.
+func PrintJSON(w io.Writer, v interface{}) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
+}
+
+// PrintDatasetList writes a table of datasets to w.
+func PrintDatasetList(w io.Writer, list *client.DatasetListResponse) {
+	if list == nil || len(list.Datasets) == 0 {
+		fmt.Fprintln(w, "  No datasets.")
+		return
+	}
+	section(w, "Datasets")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tSOURCE\tTYPE\tSTATE\tRECORDS\tCREATED_AT")
+	fmt.Fprintln(tw, "  ──\t──────\t────\t──────\t───────\t──────────")
+	for _, d := range list.Datasets {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d\t%s\n",
+			trunc(d.ID, 8),
+			d.Source,
+			d.SourceType,
+			d.State,
+			d.RecordCount,
+			d.CreatedAt,
+		)
+	}
+	tw.Flush()
+	fmt.Fprintln(w)
+}
+
+// PrintScopeSync writes scope sync results as a table.
+func PrintScopeSync(w io.Writer, r *client.ScopeSyncResponse) {
+	if r == nil || len(r.Results) == 0 {
+		fmt.Fprintln(w, "  No results.")
+		return
+	}
+	section(w, "Scope sync")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  REGISTRY\tSTATUS\tBLOCKS\tASNS\tDURATION\tERROR")
+	fmt.Fprintln(tw, "  ────────\t──────\t──────\t────\t────────\t─────")
+	for _, x := range r.Results {
+		errStr := x.Error
+		if errStr == "" {
+			errStr = "—"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%d\t%d\t%d ms\t%s\n",
+			x.Registry, x.Status, x.BlocksPersisted, x.ASNsPersisted, x.DurationMs, errStr)
+	}
+	tw.Flush()
+	fmt.Fprintln(w)
+}
+
+// PrintRoutingSync writes routing sync results as a table.
+func PrintRoutingSync(w io.Writer, r *client.RoutingSyncResponse) {
+	if r == nil || len(r.Results) == 0 {
+		fmt.Fprintln(w, "  No results.")
+		return
+	}
+	section(w, "Routing sync")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  SOURCE\tSTATUS\tROWS\tDURATION\tERROR")
+	fmt.Fprintln(tw, "  ──────\t──────\t────\t────────\t─────")
+	for _, x := range r.Results {
+		errStr := x.Error
+		if errStr == "" {
+			errStr = "—"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%d\t%d ms\t%s\n",
+			x.Source, x.Status, x.RowsPersisted, x.DurationMs, errStr)
+	}
+	tw.Flush()
+	fmt.Fprintln(w)
+}
+
+// PrintIPResolve writes scope by-ip result (key-value block).
+func PrintIPResolve(w io.Writer, r *client.IPResolveResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Scope · IP → Country")
+	kv(w, "IP", r.IP)
+	kv(w, "Country", r.ScopeValue)
+	kv(w, "Scope type", r.ScopeType)
+	kv(w, "Dataset ID", r.DatasetID)
+	if r.Registry != "" {
+		kv(w, "Registry", r.Registry)
+	}
+	if r.Serial != 0 {
+		kvInt(w, "Serial", r.Serial)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintRoutingByIP writes routing by-ip result (key-value block).
+func PrintRoutingByIP(w io.Writer, r *client.RoutingByIPResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Routing · IP → ASN")
+	kv(w, "IP", r.IP)
+	kv(w, "Matched prefix", r.MatchedPrefix)
+	kv(w, "ASN (raw)", r.ASNRaw)
+	if r.PrimaryASN != nil {
+		kvInt(w, "Primary ASN", *r.PrimaryASN)
+	}
+	kv(w, "Type", r.ASNType)
+	if r.ASName != "" {
+		kv(w, "AS name", r.ASName)
+	}
+	if r.OrgName != "" {
+		kv(w, "Organization", r.OrgName)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintCountrySummary writes scope country summary.
+func PrintCountrySummary(w io.Writer, r *client.CountrySummaryResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Country summary · "+r.ScopeValue)
+	kv(w, "Country", r.ScopeValue)
+	kvInt(w, "IPv4 blocks", r.IPv4BlockCount)
+	kvInt(w, "IPv6 blocks", r.IPv6BlockCount)
+	kvInt(w, "Total blocks", r.Total)
+	if len(r.DatasetsUsed) > 0 {
+		fmt.Fprintf(w, "\n  %-*s  ", labelWidth, "Datasets used:")
+		for i, d := range r.DatasetsUsed {
+			if i > 0 {
+				fmt.Fprint(w, ", ")
+			}
+			fmt.Fprintf(w, "%s (%s)", trunc(d.DatasetID, 8), d.Registry)
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintRoutingASNMeta writes ASN metadata (routing).
+func PrintRoutingASNMeta(w io.Writer, r *client.RoutingASNMetaResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "ASN metadata · "+fmt.Sprintf("%d", r.ASN))
+	kvInt(w, "ASN", int64(r.ASN))
+	if r.ASName != "" {
+		kv(w, "Name", r.ASName)
+	}
+	if r.OrgName != "" {
+		kv(w, "Organization", r.OrgName)
+	}
+	if r.Source != "" {
+		kv(w, "Source", r.Source)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintASNPrefixes writes routing ASN prefixes list.
+func PrintASNPrefixes(w io.Writer, r *client.RoutingASNPrefixesResponse) {
+	if r == nil {
+		return
+	}
+	section(w, fmt.Sprintf("ASN %d · Prefixes (%d total)", r.ASN, r.Total))
+	if len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No prefixes.")
+		fmt.Fprintln(w)
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  PREFIX\tLEN\tASN_RAW\tTYPE")
+	fmt.Fprintln(tw, "  ──────\t───\t───────\t────")
+	for _, p := range r.Items {
+		fmt.Fprintf(tw, "  %s\t%d\t%s\t%s\n", p.Prefix, p.PrefixLength, p.ASNRaw, p.ASNType)
+	}
+	tw.Flush()
+	if r.HasMore {
+		fmt.Fprintf(w, "\n  … more (offset %d)\n", r.Offset)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintStatus writes health status of the three services.
+func PrintStatus(w io.Writer, dataset, scope, routing client.HealthResult) {
+	section(w, "Service status")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  SERVICE\tSTATUS\tDETAIL")
+	fmt.Fprintln(tw, "  ───────\t──────\t──────")
+	statusRow("dataset", dataset, tw)
+	statusRow("scope", scope, tw)
+	statusRow("routing", routing, tw)
+	tw.Flush()
+	fmt.Fprintln(w)
+}
+
+func statusRow(name string, r client.HealthResult, w *tabwriter.Writer) {
+	if r.OK {
+		fmt.Fprintf(w, "  %s\t  ✓ ok\t  —\n", name)
+	} else {
+		fmt.Fprintf(w, "  %s\t  ✗ fail\t  %s\n", name, r.Error)
+	}
+}
+
+// PrintFetchResult writes dataset fetch result (single or all).
+func PrintFetchResult(w io.Writer, v interface{}) {
+	switch r := v.(type) {
+	case *client.FetchResultAll:
+		if r == nil || len(r.Results) == 0 {
+			fmt.Fprintln(w, "  No results.")
+			return
+		}
+		section(w, "Dataset fetch")
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "  REGISTRY\tSTATUS\tDATASET_ID\tSTATE\tERROR")
+		fmt.Fprintln(tw, "  ────────\t──────\t──────────\t──────\t─────")
+		for _, x := range r.Results {
+			errStr := x.Error
+			if errStr == "" {
+				errStr = "—"
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", x.Registry, x.Status, trunc(x.DatasetID, 8), x.State, errStr)
+		}
+		tw.Flush()
+		fmt.Fprintln(w)
+	case *client.FetchResultSingle:
+		if r == nil {
+			return
+		}
+		section(w, "Dataset fetch")
+		kv(w, "Status", r.Status)
+		kv(w, "Dataset ID", r.DatasetID)
+		if r.Registry != "" {
+			kv(w, "Registry", r.Registry)
+		}
+		if r.State != "" {
+			kv(w, "State", r.State)
+		}
+		if r.Error != "" {
+			kv(w, "Error", r.Error)
+		}
+		fmt.Fprintln(w)
+	default:
+		fmt.Fprintf(w, "%v\n", v)
+	}
+}
+
+// PrintDatasetGet writes a single dataset version.
+func PrintDatasetGet(w io.Writer, d *client.DatasetVersion) {
+	if d == nil {
+		return
+	}
+	section(w, "Dataset · "+trunc(d.ID, 8))
+	kv(w, "ID", d.ID)
+	kv(w, "Source", d.Source)
+	kv(w, "Source type", d.SourceType)
+	kv(w, "State", d.State)
+	kvInt(w, "Record count", d.RecordCount)
+	if d.CreatedAt != "" {
+		kv(w, "Created", d.CreatedAt)
+	}
+	fmt.Fprintln(w)
+}
+
+func trunc(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// PrintCountryBlocks writes scope country blocks (table).
+func PrintCountryBlocks(w io.Writer, r *client.CountryBlocksResponse) {
+	if r == nil {
+		return
+	}
+	section(w, fmt.Sprintf("Country %s · Blocks (%d of %d)", r.ScopeValue, r.Count, r.Total))
+	if len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No blocks.")
+		fmt.Fprintln(w)
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  START\tEND\tCOUNT\tSTATUS")
+	fmt.Fprintln(tw, "  ─────\t───\t─────\t──────")
+	for _, b := range r.Items {
+		fmt.Fprintf(tw, "  %s\t%s\t%d\t%s\n", b.StartValue, b.EndValue, b.Count, b.Status)
+	}
+	tw.Flush()
+	if r.HasMore {
+		fmt.Fprintf(w, "\n  … more (offset %d)\n", r.Offset)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintCountryASNs writes scope country ASNs (table).
+func PrintCountryASNs(w io.Writer, r *client.CountryASNsResponse) {
+	if r == nil {
+		return
+	}
+	section(w, fmt.Sprintf("Country %s · ASN ranges (%d of %d)", r.ScopeValue, r.Count, r.Total))
+	if len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No ASN ranges.")
+		fmt.Fprintln(w)
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ASN_START\tASN_END\tREGISTRY\tDATE")
+	fmt.Fprintln(tw, "  ─────────\t───────\t────────\t────")
+	for _, a := range r.Items {
+		fmt.Fprintf(tw, "  %d\t%d\t%s\t%s\n", a.ASNStart, a.ASNEnd, a.Registry, a.Date)
+	}
+	tw.Flush()
+	if r.HasMore {
+		fmt.Fprintf(w, "\n  … more (offset %d)\n", r.Offset)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintCountryASNSummary writes scope country asn-summary.
+func PrintCountryASNSummary(w io.Writer, r *client.CountryASNSummaryResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Country "+r.ScopeValue+" · ASN summary")
+	kv(w, "Country", r.ScopeValue)
+	kvInt(w, "ASN range count", int64(r.ASNRangeCount))
+	kvInt(w, "ASN total count", r.ASNTotalCount)
+	fmt.Fprintln(w)
+}
+
+// PrintCountryDatasets writes scope country datasets list.
+func PrintCountryDatasets(w io.Writer, r *client.CountryDatasetsResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Country "+r.ScopeValue+" · Datasets with blocks")
+	if len(r.Datasets) == 0 {
+		fmt.Fprintln(w, "  No datasets.")
+		fmt.Fprintln(w)
+		return
+	}
+	for _, d := range r.Datasets {
+		fmt.Fprintf(w, "  · %s  (%s)\n", d.DatasetID, d.Registry)
+	}
+	fmt.Fprintln(w)
+}
+
+// Format is output format: "table" or "json".
+func Format(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "json" {
+		return "json"
+	}
+	return "table"
+}
+
+// OutputFormat returns the format from a flag value (e.g. -o json).
+func OutputFormat(flag string) string {
+	return Format(flag)
+}

@@ -138,6 +138,54 @@ Volumes: `postgres_data`, `dataset_artifacts`. No `.env` required; everything is
 
 ---
 
+## Heimdallctl (CLI)
+
+**heimdallctl** is the official CLI for operating Heimdall. It talks to dataset-, scope-, and routing-service over HTTP (no business logic or DB in the CLI). Human-readable output by default; use `-o json` for scripting.
+
+**Build:** (binary is not committed; use `bin/` or any path you prefer)
+
+```bash
+mkdir -p bin && go build -o bin/heimdallctl ./cmd/heimdallctl
+```
+
+**Configuration:** Environment variables override config files. Default base URLs: `http://localhost:8080` (dataset), `http://localhost:8081` (scope), `http://localhost:8082` (routing). Optional config file: `~/.config/heimdall/config.yaml` or `.heimdall.yaml` in the current directory. Set `HEIMDALL_DATASET_URL`, `HEIMDALL_SCOPE_URL`, `HEIMDALL_ROUTING_URL`, `HEIMDALL_TIMEOUT` (seconds) to override.
+
+**Examples:**
+
+```bash
+# Health of all three services
+heimdallctl status
+
+# Dataset: fetch (RIR or CAIDA), list, get
+heimdallctl dataset fetch --registry=all
+heimdallctl dataset fetch --source=caida_pfx2as_ipv4
+heimdallctl dataset list
+heimdallctl dataset get <uuid>
+
+# Scope: sync, resolve IP, country summary/blocks/asns
+heimdallctl scope sync
+heimdallctl scope by-ip 8.8.8.8
+heimdallctl scope country summary ES
+heimdallctl scope country blocks ES --limit=10
+heimdallctl scope country asns ES
+heimdallctl scope country asn-summary ES
+heimdallctl scope country datasets ES
+
+# Routing: sync, IP→ASN, ASN metadata, ASN prefixes
+heimdallctl routing sync
+heimdallctl routing by-ip 8.8.8.8
+heimdallctl routing asn 15169
+heimdallctl routing asn prefixes 15169 --limit=10
+
+# JSON output for scripting
+heimdallctl status -o json
+heimdallctl scope by-ip 8.8.8.8 -o json
+```
+
+See the service OpenAPI specs for full semantics of each operation.
+
+---
+
 ## Example endpoints
 
 ### dataset-service (port 8080)

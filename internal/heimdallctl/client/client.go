@@ -1,0 +1,175 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/martinezpascualdani/heimdall/internal/heimdallctl/config"
+)
+
+// Client calls Heimdall HTTP APIs. No business logic; only HTTP and JSON.
+type Client struct {
+	cfg    *config.Config
+	http   *http.Client
+	dataset string
+	scope   string
+	routing string
+}
+
+// New builds a Client from config. Base URLs are trimmed of trailing slashes.
+func New(cfg *config.Config) *Client {
+	if cfg == nil {
+		cfg = config.Load()
+	}
+	c := &Client{
+		cfg:    cfg,
+		dataset: strings.TrimSuffix(cfg.DatasetURL, "/"),
+		scope:   strings.TrimSuffix(cfg.ScopeURL, "/"),
+		routing: strings.TrimSuffix(cfg.RoutingURL, "/"),
+	}
+	c.http = &http.Client{Timeout: cfg.Timeout}
+	return c
+}
+
+// WithTimeout returns a clone of the client with a custom timeout (e.g. for long syncs).
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	out := *c
+	out.http = &http.Client{Timeout: d}
+	return &out
+}
+
+// apiError is returned when the API responds with status >= 400.
+type apiError struct {
+	StatusCode int
+	Body       string
+	Message    string
+}
+
+func (e *apiError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+// get performs GET and decodes JSON into out. Returns apiError on 4xx/5xx.
+func (c *Client) get(ctx context.Context, baseURL, path string, out interface{}) error {
+	url := baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		msg := string(body)
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &errBody)
+		if errBody.Error != "" {
+			msg = errBody.Error
+		}
+		return &apiError{StatusCode: resp.StatusCode, Body: string(body), Message: msg}
+	}
+	if out != nil && len(body) > 0 {
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
+
+// post performs POST and decodes JSON into out. Returns apiError on 4xx/5xx.
+func (c *Client) post(ctx context.Context, baseURL, path string, out interface{}) error {
+	url := baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		msg := string(body)
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &errBody)
+		if errBody.Error != "" {
+			msg = errBody.Error
+		}
+		return &apiError{StatusCode: resp.StatusCode, Body: string(body), Message: msg}
+	}
+	if out != nil && len(body) > 0 {
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
+
+// IsAPIError returns true if err is from an API 4xx/5xx response.
+func IsAPIError(err error) (statusCode int, ok bool) {
+	if e, ok := err.(*apiError); ok {
+		return e.StatusCode, true
+	}
+	return 0, false
+}
+
+// ErrMessage returns a short message for the user (API error or err.Error()).
+func ErrMessage(err error) string {
+	if e, ok := err.(*apiError); ok {
+		return e.Message
+	}
+	return err.Error()
+}
+
+// HealthResult is the result of GET /health for one service.
+type HealthResult struct {
+	OK    bool
+	Error string
+}
+
+// DatasetHealth calls GET /health on dataset-service.
+func (c *Client) DatasetHealth(ctx context.Context) HealthResult {
+	return c.health(ctx, c.dataset)
+}
+
+// ScopeHealth calls GET /health on scope-service.
+func (c *Client) ScopeHealth(ctx context.Context) HealthResult {
+	return c.health(ctx, c.scope)
+}
+
+// RoutingHealth calls GET /health on routing-service.
+func (c *Client) RoutingHealth(ctx context.Context) HealthResult {
+	return c.health(ctx, c.routing)
+}
+
+func (c *Client) health(ctx context.Context, baseURL string) HealthResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil)
+	if err != nil {
+		return HealthResult{OK: false, Error: err.Error()}
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return HealthResult{OK: false, Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return HealthResult{OK: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	}
+	return HealthResult{OK: true}
+}
