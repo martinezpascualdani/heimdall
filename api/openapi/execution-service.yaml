@@ -1,0 +1,316 @@
+openapi: 3.0.3
+info:
+  title: Heimdall Execution Service API
+  version: 0.1.0
+  description: |
+    **execution-service:** Execution plane coordinator. Consumes campaign runs from Redis,
+    creates executions and jobs, registers workers, assigns jobs (pull), handles leases and requeue.
+    **ready:** Requires Postgres and Redis consumer group.
+
+paths:
+  /health:
+    get:
+      summary: Liveness
+      operationId: health
+      responses:
+        '200':
+          description: OK
+  /ready:
+    get:
+      summary: Readiness
+      description: false if Postgres or Redis unavailable.
+      operationId: ready
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: Not ready
+  /version:
+    get:
+      summary: Version
+      operationId: version
+      responses:
+        '200':
+          description: version and build_time
+
+  /v1/workers:
+    post:
+      summary: Register worker
+      operationId: registerWorker
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterWorkerRequest'
+      responses:
+        '200':
+          description: Worker registered
+        '400':
+          description: Invalid body
+  /v1/workers/{id}:
+    get:
+      summary: Get worker
+      operationId: getWorker
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Worker (current_load derived)
+        '404':
+          description: Not found
+    patch:
+      summary: Heartbeat (and optional capabilities update)
+      operationId: workerHeartbeat
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: OK
+        '404':
+          description: Worker not found
+
+  /v1/jobs/claim:
+    post:
+      summary: Claim a job (pull)
+      operationId: claimJob
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimJobRequest'
+      responses:
+        '200':
+          description: Job assigned or null if none
+        '400':
+          description: Invalid worker_id
+        '404':
+          description: Worker not found
+  /v1/jobs/{id}/complete:
+    post:
+      summary: Report job completed
+      operationId: completeJob
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteJobRequest'
+      responses:
+        '200':
+          description: OK
+        '400':
+          description: Lease mismatch or invalid
+  /v1/jobs/{id}/fail:
+    post:
+      summary: Report job failed
+      operationId: failJob
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FailJobRequest'
+      responses:
+        '200':
+          description: OK
+        '400':
+          description: Lease mismatch or invalid
+  /v1/jobs/{id}/renew:
+    post:
+      summary: Renew lease
+      operationId: renewLease
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenewLeaseRequest'
+      responses:
+        '200':
+          description: OK
+        '400':
+          description: Lease not found or expired
+
+  /v1/executions:
+    get:
+      summary: List executions
+      operationId: listExecutions
+      parameters:
+        - name: run_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: campaign_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [planning, running, completed, failed, canceled]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list
+  /v1/executions/{id}:
+    get:
+      summary: Get execution
+      operationId: getExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Execution
+        '404':
+          description: Not found
+  /v1/executions/{id}/jobs:
+    get:
+      summary: List jobs of execution
+      operationId: listExecutionJobs
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated jobs
+
+components:
+  schemas:
+    RegisterWorkerRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        region:
+          type: string
+        version:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        max_concurrency:
+          type: integer
+          default: 1
+    HeartbeatRequest:
+      type: object
+      properties:
+        capabilities:
+          type: array
+          items:
+            type: string
+        max_concurrency:
+          type: integer
+    ClaimJobRequest:
+      type: object
+      required:
+        - worker_id
+      properties:
+        worker_id:
+          type: string
+          format: uuid
+        capabilities:
+          type: array
+          items:
+            type: string
+    CompleteJobRequest:
+      type: object
+      required:
+        - worker_id
+        - lease_id
+      properties:
+        worker_id:
+          type: string
+          format: uuid
+        lease_id:
+          type: string
+        result_summary:
+          type: object
+    FailJobRequest:
+      type: object
+      required:
+        - worker_id
+        - lease_id
+      properties:
+        worker_id:
+          type: string
+          format: uuid
+        lease_id:
+          type: string
+        error_message:
+          type: string
+    RenewLeaseRequest:
+      type: object
+      required:
+        - worker_id
+        - lease_id
+      properties:
+        worker_id:
+          type: string
+          format: uuid
+        lease_id:
+          type: string

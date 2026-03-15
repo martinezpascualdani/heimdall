@@ -1,0 +1,22 @@
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /scan-worker ./cmd/scan-worker
+
+# Build masscan from source (not in Alpine repos)
+FROM alpine:3.19 AS masscan-builder
+RUN apk --no-cache add build-base libpcap-dev git linux-headers
+RUN git clone --depth 1 https://github.com/robertdavidgraham/masscan /src/masscan
+WORKDIR /src/masscan
+RUN make -j$(nproc) && cp bin/masscan /masscan
+
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates zmap libpcap
+WORKDIR /app
+COPY --from=builder /scan-worker .
+# Bundle zmap and masscan next to the worker (SCAN_ENGINE=zmap|masscan)
+RUN mkdir -p bin && cp /usr/sbin/zmap bin/zmap
+COPY --from=masscan-builder /masscan bin/masscan
+CMD ["./scan-worker"]

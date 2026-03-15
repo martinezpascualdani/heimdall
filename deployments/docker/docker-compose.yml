@@ -1,3 +1,5 @@
+name: heimdall
+
 services:
   postgres:
     image: postgres:15-alpine
@@ -137,6 +139,52 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
+
+  execution-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.execution-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      target-service:
+        condition: service_healthy
+    environment:
+      EXECUTION_DB_DSN: postgres://heimdall:heimdall@postgres:5432/heimdall_execution_service?sslmode=disable
+      REDIS_ADDR: redis:6379
+      TARGET_SERVICE_URL: http://target-service:8083
+      PORT: "8085"
+      INGEST_ENABLED: "true"
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8085/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  scan-worker:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.scan-worker
+    cap_add:
+      - NET_RAW   # required for masscan/zmap raw SYN packets
+    depends_on:
+      execution-service:
+        condition: service_healthy
+    environment:
+      EXECUTION_SERVICE_URL: http://execution-service:8085
+      # default is masscan; set SCAN_ENGINE=zmap to use zmap
+      WORKER_NAME: docker-scan-worker-1
+      WORKER_REGION: docker
+      WORKER_VERSION: "0.1.0"
+      WORKER_CAPABILITIES: discovery-basic,portscan-basic,portscan-full,portscan-medium,discovery-plus-ports
+      WORKER_MAX_CONCURRENCY: "1"
+      HEARTBEAT_INTERVAL: 25s
+      CLAIM_INTERVAL: 5s
+    restart: unless-stopped
 
 volumes:
   postgres_data:

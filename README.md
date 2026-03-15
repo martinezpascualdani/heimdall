@@ -61,6 +61,8 @@ heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing  target  campaign
 - **routing-service**: Pulls CAIDA (pfx2as, as-org) from dataset-service, stores in Postgres (`heimdall_routing_service`). Exposes IP→ASN (LPM), ASN metadata, ASN→prefixes.
 - **target-service**: Stores target definitions (rules: include/exclude by country, ASN, prefix, world) in Postgres (`heimdall_target_service`). Materializes targets by calling scope-service and routing-service, persists immutable CIDR snapshots. Supports diff between snapshots. **World** = union of RIR inventory per country (operational view, not “all BGP”). **Exclusion by prefix:** v1 only removes entire materialized prefixes contained in the exclusion CIDR; no CIDR subtraction/splitting.
 - **campaign-service**: Control plane: campaigns (target_id, scan_profile_id, schedule: manual/once/interval), scan profiles, and campaign runs. Persists in Postgres (`heimdall_campaign_service`). Resolves materialization via target-service (use_latest or rematerialize), publishes run payloads to Redis Streams (`heimdall:campaign:runs`). Scheduler (optional) creates runs for due campaigns. `/ready` requires DB and Redis.
+- **execution-service**: Execution plane coordinator. Consumes run payloads from Redis (consumer group), creates executions and jobs in Postgres (`heimdall_execution_service`), fetches prefixes from target-service. Exposes HTTP API for workers: register, heartbeat, claim job, complete/fail/renew. Scheduler expires leases and marks stale workers offline. `/ready` requires DB and Redis.
+- **scan-worker**: Agent binary. Registers with execution-service, sends heartbeats, claims jobs (pull), runs port discovery (ZMap adapter), reports complete/fail. Deploy one or more workers; they share work via execution-service.
 - **heimdallctl**: Official CLI; queries dataset-, scope-, routing-, target-, and campaign-service over HTTP. No database or business logic; build with `go build -o bin/heimdallctl ./cmd/heimdallctl`.
 
 ---
@@ -74,8 +76,9 @@ heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing  target  campaign
 | **routing-service** | **Observed routing state.** Import pfx2as + as-org, IP→ASN (LPM), ASN metadata, ASN→prefixes | 8082    |
 | **target-service**  | Target definitions, rules, materialization to CIDR sets, snapshots and diff | 8083    |
 | **campaign-service** | Control plane: campaigns, scan profiles, runs; dispatch to Redis Streams | 8084    |
-| **Redis**           | Stream `heimdall:campaign:runs` for run dispatch (workers consume) | 6379    |
-| **PostgreSQL**      | Databases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service` | 5432   |
+| **execution-service** | Execution plane: consume runs, create jobs, worker API (claim/complete/fail) | 8085    |
+| **Redis**           | Stream `heimdall:campaign:runs` for run dispatch (execution-service consumes) | 6379    |
+| **PostgreSQL**      | Databases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service`, `heimdall_execution_service` | 5432   |
 
 ---
 
@@ -98,11 +101,11 @@ docker compose up --build -d
 
 This starts:
 
-1. **Postgres** (port 5432), creating `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, and `heimdall_campaign_service` on first run.
+1. **Postgres** (port 5432), creating `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service`, and `heimdall_execution_service` on first run.
 2. **dataset-service** (port 8080), after Postgres is healthy.
 3. **scope-service** (port 8081) and **routing-service** (port 8082), after dataset-service is healthy.
 4. **target-service** (port 8083), after scope and routing are healthy.
-5. **Redis** (port 6379) and **campaign-service** (port 8084), after target-service is healthy.
+5. **Redis** (port 6379), **campaign-service** (port 8084), and **execution-service** (port 8085), after target-service is healthy.
 
 Volumes: `postgres_data`, `dataset_artifacts`. No `.env` required; everything is set in `docker-compose.yml`.
 
@@ -325,7 +328,7 @@ See the service OpenAPI specs (`api/openapi/*.yaml`) for full semantics of each 
 | POST | `/v1/runs/{id}/cancel` | Cancel run. |
 | GET | `/health`, `/ready`, `/version` | Health, readiness (DB+Redis), version. |
 
-OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`, `api/openapi/routing-service.yaml`, `api/openapi/target-service.yaml`, `api/openapi/campaign-service.yaml`.
+OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`, `api/openapi/routing-service.yaml`, `api/openapi/target-service.yaml`, `api/openapi/campaign-service.yaml`, `api/openapi/execution-service.yaml`.
 
 ---
 
@@ -339,6 +342,7 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
    CREATE DATABASE heimdall_routing_service;
    CREATE DATABASE heimdall_target_service;
    CREATE DATABASE heimdall_campaign_service;
+   CREATE DATABASE heimdall_execution_service;
    ```
 
 2. **Environment:** Copy `configs/.env.example` to `.env` and set DSNs, ports, and `DATASET_SERVICE_URL` (see comments in the example).
@@ -360,6 +364,12 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
 
    # Terminal 5 – campaign-service (PORT=8084; needs target-service, Postgres, Redis)
    go run ./cmd/campaign-service
+
+   # Terminal 6 – execution-service (PORT=8085; needs target-service, Postgres, Redis)
+   go run ./cmd/execution-service
+
+   # Optional: scan-worker (connects to execution-service; needs ZMap installed for port discovery)
+   go run ./cmd/scan-worker
    ```
 
 4. **Tests:**
