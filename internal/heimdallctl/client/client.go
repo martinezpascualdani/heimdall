@@ -186,6 +186,49 @@ func (c *Client) put(ctx context.Context, baseURL, path string, body interface{}
 	return nil
 }
 
+// patchBody performs PATCH with JSON body and decodes response into out.
+func (c *Client) patchBody(ctx context.Context, baseURL, path string, body interface{}, out interface{}) error {
+	url := baseURL + path
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		bodyReader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bodyReader)
+	if err != nil {
+		return err
+	}
+	if bodyReader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		msg := string(respBody)
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &errBody)
+		if errBody.Error != "" {
+			msg = errBody.Error
+		}
+		return &apiError{StatusCode: resp.StatusCode, Body: string(respBody), Message: msg}
+	}
+	if out != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
+
 // delete performs DELETE. Returns apiError on 4xx/5xx.
 func (c *Client) delete(ctx context.Context, baseURL, path string) error {
 	url := baseURL + path

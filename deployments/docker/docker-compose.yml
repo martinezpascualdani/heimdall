@@ -181,7 +181,7 @@ services:
       WORKER_REGION: docker
       WORKER_VERSION: "0.1.0"
       WORKER_CAPABILITIES: discovery-basic,portscan-basic,portscan-full,portscan-medium,discovery-plus-ports
-      WORKER_MAX_CONCURRENCY: "1"
+      WORKER_MAX_CONCURRENCY: "5"   # jobs in parallel per worker (increase to 10 if host has capacity)
       HEARTBEAT_INTERVAL: 25s
       CLAIM_INTERVAL: 5s
     restart: unless-stopped

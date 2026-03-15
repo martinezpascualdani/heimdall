@@ -648,9 +648,9 @@ func PrintExecutionList(w io.Writer, r *client.ExecutionListResponse) {
 	fmt.Fprintln(tw, "  ──\t──────\t───────────\t──────\t────\t─────────\t─────\t──────────")
 	for _, e := range r.Items {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
-			trunc(e.ID, 8),
-			trunc(e.RunID, 8),
-			trunc(e.CampaignID, 8),
+			e.ID,
+			e.RunID,
+			e.CampaignID,
 			e.Status,
 			e.TotalJobs,
 			e.CompletedJobs,
@@ -667,7 +667,7 @@ func PrintExecution(w io.Writer, e *client.ExecutionItem) {
 	if e == nil {
 		return
 	}
-	section(w, "Execution · "+trunc(e.ID, 8))
+	section(w, "Execution · "+e.ID)
 	kv(w, "ID", e.ID)
 	kv(w, "Run ID", e.RunID)
 	kv(w, "Campaign ID", e.CampaignID)
@@ -704,7 +704,7 @@ func PrintExecutionJobs(w io.Writer, items []client.ExecutionJobItem, total, lim
 	for _, j := range items {
 		worker := "—"
 		if j.AssignedWorkerID != nil {
-			worker = trunc(*j.AssignedWorkerID, 8)
+			worker = *j.AssignedWorkerID
 		}
 		expires := "—"
 		if j.LeaseExpiresAt != nil {
@@ -715,8 +715,8 @@ func PrintExecutionJobs(w io.Writer, items []client.ExecutionJobItem, total, lim
 			errStr = "—"
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n",
-			trunc(j.ID, 8),
-			trunc(j.ExecutionID, 8),
+			j.ID,
+			j.ExecutionID,
 			j.Status,
 			j.Attempt,
 			j.MaxAttempts,
@@ -732,7 +732,7 @@ func PrintExecutionJobs(w io.Writer, items []client.ExecutionJobItem, total, lim
 	fmt.Fprintln(w)
 }
 
-// PrintWorkerList writes workers table.
+// PrintWorkerList writes workers table (full ID so you can copy for worker jobs <id>).
 func PrintWorkerList(w io.Writer, r *client.WorkerListResponse) {
 	if r == nil || len(r.Items) == 0 {
 		fmt.Fprintln(w, "  No workers.")
@@ -748,7 +748,7 @@ func PrintWorkerList(w io.Writer, r *client.WorkerListResponse) {
 			hb = *w.LastHeartbeatAt
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
-			trunc(w.ID, 8),
+			w.ID,
 			w.Name,
 			w.Region,
 			w.Version,

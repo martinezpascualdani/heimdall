@@ -235,3 +235,18 @@ func (c *Client) WorkerListJobs(ctx context.Context, workerID string, limit int)
 	}
 	return &out, nil
 }
+
+// WorkerUpdateMaxConcurrency sends PATCH /v1/workers/{id} with max_concurrency (heartbeat endpoint updates DB).
+func (c *Client) WorkerUpdateMaxConcurrency(ctx context.Context, workerID string, maxConcurrency int) error {
+	if workerID == "" {
+		return fmt.Errorf("worker id required")
+	}
+	if maxConcurrency <= 0 {
+		return fmt.Errorf("max_concurrency must be >= 1")
+	}
+	path := "/v1/workers/" + url.PathEscape(workerID)
+	body := struct {
+		MaxConcurrency int `json:"max_concurrency"`
+	}{MaxConcurrency: maxConcurrency}
+	return c.patchBody(ctx, c.execution, path, body, nil)
+}
