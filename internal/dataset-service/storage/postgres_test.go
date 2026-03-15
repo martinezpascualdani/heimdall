@@ -36,6 +36,7 @@ func TestPostgresStore_CreateVersion_GetByID(t *testing.T) {
 	// Use test_ prefix to avoid collision with real data in shared DB
 	v := &domain.DatasetVersion{
 		ID: id, Registry: "test_ripencc", Serial: serial,
+		SourceType: domain.SourceTypeRIR, Source: "test_ripencc", SourceVersion: "",
 		StartDate: "20240101", EndDate: "20240102", RecordCount: 1000,
 		State: domain.StateValidated, StoragePath: "test_ripencc/delegated-serial-abc.txt",
 		CreatedAt: now, UpdatedAt: now,
@@ -70,9 +71,9 @@ func TestPostgresStore_GetByRegistrySerial_PrefersValidated(t *testing.T) {
 	id1 := uuid.New()
 	now := time.Now()
 	// Insert failed first, then validated (same registry+serial)
-	store.CreateVersion(&domain.DatasetVersion{ID: id1, Registry: reg, Serial: serial, State: domain.StateFailed, Error: "err", CreatedAt: now, UpdatedAt: now})
+	store.CreateVersion(&domain.DatasetVersion{ID: id1, Registry: reg, Serial: serial, SourceType: domain.SourceTypeRIR, Source: reg, SourceVersion: "", State: domain.StateFailed, Error: "err", CreatedAt: now, UpdatedAt: now})
 	id2 := uuid.New()
-	store.CreateVersion(&domain.DatasetVersion{ID: id2, Registry: reg, Serial: serial, State: domain.StateValidated, StoragePath: "/x", CreatedAt: now.Add(time.Second), UpdatedAt: now})
+	store.CreateVersion(&domain.DatasetVersion{ID: id2, Registry: reg, Serial: serial, SourceType: domain.SourceTypeRIR, Source: reg, SourceVersion: "", State: domain.StateValidated, StoragePath: "/x", CreatedAt: now.Add(time.Second), UpdatedAt: now})
 
 	got, err := store.GetByRegistrySerial(reg, serial)
 	if err != nil {
@@ -93,9 +94,9 @@ func TestPostgresStore_List(t *testing.T) {
 	serial := uniqueSerial(999003001)
 	id := uuid.New()
 	now := time.Now()
-	store.CreateVersion(&domain.DatasetVersion{ID: id, Registry: "test_arin", Serial: serial, State: domain.StateValidated, CreatedAt: now, UpdatedAt: now})
+	store.CreateVersion(&domain.DatasetVersion{ID: id, Registry: "test_arin", Serial: serial, SourceType: domain.SourceTypeRIR, Source: "test_arin", SourceVersion: "", State: domain.StateValidated, CreatedAt: now, UpdatedAt: now})
 
-	list, err := store.List(10)
+	list, err := store.List(10, "", "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestPostgresStore_List(t *testing.T) {
 		t.Errorf("List: expected at least 1, got %d", len(list))
 	}
 	// List(0) should default to 100
-	list, _ = store.List(0)
+	list, _ = store.List(0, "", "")
 	if len(list) > 100 {
 		t.Errorf("List(0) should cap at 100, got %d", len(list))
 	}
@@ -121,9 +122,9 @@ func TestPostgresStore_GetLatestByRegistry(t *testing.T) {
 	reg := fmt.Sprintf("test_lacnic_%d", base)
 	now := time.Now()
 	id1 := uuid.New()
-	store.CreateVersion(&domain.DatasetVersion{ID: id1, Registry: reg, Serial: base, State: domain.StateValidated, CreatedAt: now, UpdatedAt: now})
+	store.CreateVersion(&domain.DatasetVersion{ID: id1, Registry: reg, Serial: base, SourceType: domain.SourceTypeRIR, Source: reg, SourceVersion: "", State: domain.StateValidated, CreatedAt: now, UpdatedAt: now})
 	id2 := uuid.New()
-	store.CreateVersion(&domain.DatasetVersion{ID: id2, Registry: reg, Serial: base + 1, State: domain.StateValidated, CreatedAt: now.Add(time.Second), UpdatedAt: now})
+	store.CreateVersion(&domain.DatasetVersion{ID: id2, Registry: reg, Serial: base + 1, SourceType: domain.SourceTypeRIR, Source: reg, SourceVersion: "", State: domain.StateValidated, CreatedAt: now.Add(time.Second), UpdatedAt: now})
 
 	got, err := store.GetLatestByRegistry(reg)
 	if err != nil {
@@ -149,7 +150,7 @@ func TestPostgresStore_UpdateState(t *testing.T) {
 	serial := uniqueSerial(999005001)
 	id := uuid.New()
 	now := time.Now()
-	store.CreateVersion(&domain.DatasetVersion{ID: id, Registry: "test_afrinic", Serial: serial, State: domain.StateFetching, CreatedAt: now, UpdatedAt: now})
+	store.CreateVersion(&domain.DatasetVersion{ID: id, Registry: "test_afrinic", Serial: serial, SourceType: domain.SourceTypeRIR, Source: "test_afrinic", SourceVersion: "", State: domain.StateFetching, CreatedAt: now, UpdatedAt: now})
 
 	if err := store.UpdateState(id, domain.StateValidated, "/path/to/file", ""); err != nil {
 		t.Fatalf("UpdateState: %v", err)

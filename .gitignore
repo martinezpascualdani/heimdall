@@ -4,9 +4,10 @@
 .env.*.local
 configs/.env
 
-# Binaries (root only; do not ignore cmd/dataset-service or cmd/scope-service)
+# Binaries (root only; do not ignore cmd/*)
 /dataset-service
 /scope-service
+/routing-service
 /heimdall
 *.exe
 bin/

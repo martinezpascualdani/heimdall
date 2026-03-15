@@ -7,17 +7,27 @@ info:
 paths:
   /v1/datasets/fetch:
     post:
-      summary: Fetch latest dataset for a registry
-      description: Downloads and validates the latest delegated file for the given RIR. If registry is omitted or "all", fetches all five RIRs (ripencc, arin, apnic, lacnic, afrinic). Idempotent by registry+serial.
+      summary: Fetch latest dataset (RIR or CAIDA)
+      description: |
+        If **source** is set, fetches the latest CAIDA dataset for that source (caida_pfx2as_ipv4, caida_pfx2as_ipv6, caida_as_org).
+        Otherwise, if **registry** is set or "all", fetches RIR delegated stats for the given registry or all five RIRs.
+        Idempotent by source+source_version (CAIDA) or registry+serial (RIR).
       operationId: fetchDatasets
       parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [caida_pfx2as_ipv4, caida_pfx2as_ipv6, caida_as_org]
+          description: CAIDA source; when set, registry is ignored
         - name: registry
           in: query
           required: false
           schema:
             type: string
             enum: [ripencc, arin, apnic, lacnic, afrinic, all]
-          description: RIR to fetch; omit or "all" to fetch all five
+          description: RIR to fetch; omit or "all" to fetch all five (ignored if source is set)
       responses:
         '200':
           description: Fetch completed (single registry or all)
@@ -43,8 +53,22 @@ paths:
   /v1/datasets:
     get:
       summary: List dataset versions
-      description: Returns a list of dataset versions (e.g. last 100).
+      description: Returns a list of dataset versions. Filter by source and/or source_type so RIR and CAIDA datasets are not mixed without clear filters.
       operationId: listDatasets
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by source (e.g. ripencc, caida_pfx2as_ipv4)
+        - name: source_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [rir, caida]
+          description: Filter by source type
       responses:
         '200':
           description: List of datasets
@@ -145,6 +169,15 @@ components:
         serial:
           type: integer
           format: int64
+        source_type:
+          type: string
+          enum: [rir, caida]
+        source:
+          type: string
+          description: e.g. ripencc or caida_pfx2as_ipv4
+        source_version:
+          type: string
+          description: Snapshot identifier for CAIDA; empty for RIR
         start_date:
           type: string
         end_date:

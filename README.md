@@ -15,11 +15,9 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 ## What it does today
 
 - **dataset-service** — Downloads and versions RIR delegated statistics files (`delegated-*-latest`). Validates headers, stores artifacts, and exposes them via API. Idempotent per registry/serial.
-- **scope-service** — Imports blocks from dataset-service (by `dataset_id`), persists them, and provides:
-  - **IP → country** resolution using a logical snapshot built from the latest imported dataset of each RIR (so the “current” view combines the newest RIPE, ARIN, APNIC, etc., without mixing stale data).
-  - **Country inventory**: blocks and summary (IPv4/IPv6 counts) per country, with optional filtering by `dataset_id` or address family.
-  - **ASN inventory**: list ASN ranges and summary (asn_range_count, asn_total_count) per country. ASN inventory reflects RIR delegated assignments, not current BGP origin AS relationships.
-  - **Sync**: one-shot sync that fetches the latest validated dataset per registry from dataset-service and imports any missing ones.
+- **scope-service** — **scope-service: assigned resource inventory.** Imports blocks from dataset-service (by `dataset_id`), persists them, and provides IP→country resolution, country inventory (blocks, summary, ASN ranges). Sync fetches latest validated per registry and imports. ASN inventory reflects RIR delegated assignments, not current BGP origin AS relationships.
+- **routing-service** — **routing-service: observed routing state.** Imports CAIDA RouteViews Prefix-to-AS (pfx2as) and AS Organizations from dataset-service. Provides IP→ASN (longest-prefix match), ASN metadata (org/name), and ASN→prefixes. Data is BGP-derived, not assignation.
+- **dataset-service** — Also supports CAIDA sources (`?source=caida_pfx2as_ipv4`, `caida_pfx2as_ipv6`, `caida_as_org`) for routing-service to consume.
 - **Tests** — Unit and integration tests for parser, import pipeline, storage, and handlers (tests pass with Go and optional local Postgres).
 
 ---
@@ -29,8 +27,8 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 ```
                     +------------------+
                     |   PostgreSQL     |
-                    | (2 DBs: datasets |
-                    |  + scope)        |
+                    | (3 DBs: datasets|
+                    |  scope, routing)|
                     +--------+---------+
                              |
          +-------------------+-------------------+
@@ -55,9 +53,10 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 
 | Service          | Role                                      | Default port |
 |------------------|-------------------------------------------|--------------|
-| **dataset-service** | Fetch, validate, version, and serve RIR datasets | 8080         |
-| **scope-service**   | Import blocks, resolve IP→country, country inventory, sync | 8081    |
-| **PostgreSQL**      | Two databases: `heimdall_datasets`, `heimdall_scope_service` | 5432   |
+| **dataset-service** | Fetch, validate, version RIR and CAIDA datasets; serve artifacts | 8080         |
+| **scope-service**   | **Assigned resource inventory.** Import blocks, IP→country, country/ASN inventory, sync | 8081    |
+| **routing-service** | **Observed routing state.** Import pfx2as + as-org, IP→ASN (LPM), ASN metadata, ASN→prefixes | 8082    |
+| **PostgreSQL**      | Databases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service` | 5432   |
 
 ---
 
@@ -80,11 +79,11 @@ docker compose up --build -d
 
 This starts:
 
-1. **Postgres** (port 5432), creating `heimdall_datasets` and `heimdall_scope_service` on first run.
+1. **Postgres** (port 5432), creating `heimdall_datasets`, `heimdall_scope_service`, and `heimdall_routing_service` on first run.
 2. **dataset-service** (port 8080), after Postgres is healthy.
-3. **scope-service** (port 8081), after dataset-service is healthy.
+3. **scope-service** (port 8081) and **routing-service** (port 8082), after dataset-service is healthy.
 
-Volumes: `postgres_data`, `dataset_artifacts` (downloaded RIR files). No `.env` required for this; everything is set in `docker-compose.yml`.
+Volumes: `postgres_data`, `dataset_artifacts`. No `.env` required; everything is set in `docker-compose.yml`.
 
 ---
 
@@ -125,6 +124,18 @@ Volumes: `postgres_data`, `dataset_artifacts` (downloaded RIR files). No `.env` 
    curl "http://localhost:8081/v1/scopes/country/ES/asn-summary"
    ```
 
+5. **Routing (observed state)** — Fetch CAIDA datasets, sync routing-service, then resolve IP→ASN and query ASN metadata/prefixes:
+
+   ```bash
+   curl -X POST "http://localhost:8080/v1/datasets/fetch?source=caida_pfx2as_ipv4"
+   curl -X POST "http://localhost:8080/v1/datasets/fetch?source=caida_pfx2as_ipv6"
+   curl -X POST "http://localhost:8080/v1/datasets/fetch?source=caida_as_org"
+   curl -X POST "http://localhost:8082/v1/imports/sync"
+   curl "http://localhost:8082/v1/asn/by-ip/8.8.8.8"
+   curl "http://localhost:8082/v1/asn/15169"
+   curl "http://localhost:8082/v1/asn/prefixes/15169?limit=10"
+   ```
+
 ---
 
 ## Example endpoints
@@ -133,8 +144,8 @@ Volumes: `postgres_data`, `dataset_artifacts` (downloaded RIR files). No `.env` 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/v1/datasets/fetch?registry=ripencc\|arin\|apnic\|lacnic\|afrinic\|all` | Fetch and register a new version (idempotent by serial). |
-| GET | `/v1/datasets` | List dataset versions (newest first). |
+| POST | `/v1/datasets/fetch?registry=...` or `?source=caida_pfx2as_ipv4\|caida_pfx2as_ipv6\|caida_as_org` | Fetch RIR or CAIDA dataset (idempotent). |
+| GET | `/v1/datasets?source=&source_type=` | List dataset versions (optional filters: source, source_type rir\|caida). |
 | GET | `/v1/datasets/{id}` | Metadata for one version. |
 | GET | `/v1/datasets/{id}/artifact` | Stream artifact content. |
 | GET | `/health`, `/ready`, `/version` | Health and version. |
@@ -153,7 +164,17 @@ Volumes: `postgres_data`, `dataset_artifacts` (downloaded RIR files). No `.env` 
 | GET | `/v1/scopes/country/{cc}/datasets` | Imported datasets that have blocks for that country. |
 | GET | `/health`, `/ready`, `/version` | Health and version. |
 
-OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`.
+### routing-service (port 8082)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/imports/sync` | Sync: fetch latest CAIDA (pfx2as IPv4/IPv6, as-org) from dataset-service and import. |
+| GET | `/v1/asn/by-ip/{ip}` | IP→ASN (longest-prefix match); optional `?dataset_id=` (routing snapshot only). |
+| GET | `/v1/asn/{asn}` | ASN metadata (as_name, org_name); 404 if none. |
+| GET | `/v1/asn/prefixes/{asn}` | Prefixes where primary_asn = ASN (deterministic order); `limit`, `offset`, `dataset_id`. |
+| GET | `/health`, `/ready`, `/version` | Health and version. |
+
+OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`, `api/openapi/routing-service.yaml`.
 
 ---
 
@@ -164,6 +185,7 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
    ```sql
    CREATE DATABASE heimdall_datasets;
    CREATE DATABASE heimdall_scope_service;
+   CREATE DATABASE heimdall_routing_service;
    ```
 
 2. **Environment:** Copy `configs/.env.example` to `.env` and set DSNs, ports, and `DATASET_SERVICE_URL` (see comments in the example).
@@ -176,6 +198,9 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
 
    # Terminal 2 – scope-service (PORT=8081)
    go run ./cmd/scope-service
+
+   # Terminal 3 – routing-service (PORT=8082)
+   go run ./cmd/routing-service
    ```
 
 4. **Tests:**
@@ -190,7 +215,7 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
 
 ## Project status
 
-- **Phase:** Development. Current focus is **RIR inventory and scope resolution** (datasets, import, by-IP, country blocks/summary, multi-RIR sync).
+- **Phase:** Development. **scope-service: assigned resource inventory.** **routing-service: observed routing state.** RIR + CAIDA datasets, scope resolution, country/ASN inventory, IP→ASN (LPM) and ASN metadata/prefixes.
 - **Not yet:** A full scanning engine or exposure pipeline; this repo is the data and API foundation for such a system.
 
 ---

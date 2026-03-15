@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,15 +21,14 @@ func NewArtifactStore(baseDir string) (*ArtifactStore, error) {
 	return &ArtifactStore{BaseDir: baseDir}, nil
 }
 
-// Save writes the artifact for the given version ID and returns the storage path.
-func (a *ArtifactStore) Save(versionID uuid.UUID, registry string, serial int64, r io.Reader) (path string, written int64, err error) {
-	// e.g. baseDir/ripencc/serial-12345-<uuid>.txt
-	sub := filepath.Join(a.BaseDir, registry)
+// Save writes the artifact for the given version ID, source, and artifact name. Returns storage path and bytes written.
+// source is used as subdirectory (e.g. ripencc, caida_pfx2as_ipv4); artifactName is the file name from the adapter.
+func (a *ArtifactStore) Save(versionID uuid.UUID, source string, artifactName string, r io.Reader) (path string, written int64, err error) {
+	sub := filepath.Join(a.BaseDir, source)
 	if err := os.MkdirAll(sub, 0755); err != nil {
 		return "", 0, err
 	}
-	name := fmt.Sprintf("delegated-%s-serial-%d-%s.txt", registry, serial, versionID.String()[:8])
-	fullPath := filepath.Join(sub, name)
+	fullPath := filepath.Join(sub, artifactName)
 	f, err := os.Create(fullPath)
 	if err != nil {
 		return "", 0, err
@@ -43,7 +41,7 @@ func (a *ArtifactStore) Save(versionID uuid.UUID, registry string, serial int64,
 	}
 	rel, _ := filepath.Rel(a.BaseDir, fullPath)
 	if rel == "" || rel == "." {
-		rel = filepath.Join(registry, name)
+		rel = filepath.Join(source, artifactName)
 	}
 	return rel, written, nil
 }

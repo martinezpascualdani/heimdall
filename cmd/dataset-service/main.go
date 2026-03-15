@@ -76,8 +76,40 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/datasets/fetch", func(w http.ResponseWriter, r *http.Request) {
+		sourceParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
 		registryName := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("registry")))
 		allRegistries := []string{"ripencc", "arin", "apnic", "lacnic", "afrinic"}
+		caidaSources := []string{fetch.SourceCAIDAPfx2asIPv4, fetch.SourceCAIDAPfx2asIPv6, fetch.SourceCAIDAASOrg}
+
+		// If ?source= is set, use CAIDA (do not use registry)
+		if sourceParam != "" {
+			validCAIDA := false
+			for _, cs := range caidaSources {
+				if sourceParam == cs {
+					validCAIDA = true
+					break
+				}
+			}
+			if !validCAIDA {
+				http.Error(w, `{"error":"unsupported source, use: caida_pfx2as_ipv4, caida_pfx2as_ipv6, caida_as_org"}`, http.StatusBadRequest)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+			defer cancel()
+			result, err := fetchSvc.FetchCAIDA(ctx, sourceParam)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			status := http.StatusOK
+			if result.Status == "created" {
+				status = http.StatusCreated
+			}
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(result)
+			return
+		}
 
 		if registryName == "" || registryName == "all" {
 			// Fetch all RIRs; timeout allows for all five
@@ -128,7 +160,9 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /v1/datasets", func(w http.ResponseWriter, r *http.Request) {
-		list, err := store.List(100)
+		source := strings.TrimSpace(r.URL.Query().Get("source"))
+		sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
+		list, err := store.List(100, source, sourceType)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

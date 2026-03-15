@@ -1,0 +1,223 @@
+openapi: 3.0.3
+info:
+  title: Heimdall Routing Service API
+  version: 0.1.0
+  description: |
+    **routing-service: observed routing state.** BGP-derived prefix-to-AS and ASN metadata.
+    Not assignation; IP→ASN and ASN→org are from CAIDA RouteViews Prefix-to-AS and AS Organizations.
+
+paths:
+  /v1/asn/by-ip/{ip}:
+    get:
+      summary: Resolve IP to ASN (longest-prefix match)
+      description: |
+        Returns the BGP observed origin AS for the given IP (longest-prefix match).
+        **dataset_id** (query) restricts only the routing (pfx2as) snapshot; metadata (as_name, org_name) always comes from the latest as-org snapshot.
+        **primary_asn** is an operational simplification derived from asn_raw (e.g. first AS in multi-origin); not authoritative in MOAS cases.
+      operationId: asnByIP
+      parameters:
+        - name: ip
+          in: path
+          required: true
+          schema:
+            type: string
+            format: ip
+        - name: dataset_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Optional; restricts routing snapshot only. If provided and not imported, returns 404 dataset_not_imported.
+      responses:
+        '200':
+          description: IP resolved to ASN and optional org metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ByIPResponse'
+        '400':
+          description: Invalid IP
+        '404':
+          description: no_routing_dataset, dataset_not_imported, or no_match
+
+  /v1/asn/{asn}:
+    get:
+      summary: Get ASN metadata (org/name)
+      description: Returns metadata only (as_name, org_name, source). 404 if no metadata for this ASN.
+      operationId: asnMeta
+      parameters:
+        - name: asn
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: ASN metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ASNMetaResponse'
+        '400':
+          description: Invalid ASN
+        '404':
+          description: No metadata for this ASN
+
+  /v1/asn/prefixes/{asn}:
+    get:
+      summary: List prefixes where primary_asn = ASN
+      description: |
+        Only prefixes where **primary_asn** equals the path ASN (deterministic order: prefix_length, prefix).
+        Does **not** include prefixes where the ASN appears only inside asn_raw (e.g. multi-origin).
+      operationId: asnPrefixes
+      parameters:
+        - name: asn
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: dataset_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of prefixes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ASNPrefixesResponse'
+        '400':
+          description: Invalid ASN or dataset_id
+        '404':
+          description: dataset_not_imported or no_routing_dataset
+
+  /v1/imports/sync:
+    post:
+      summary: Sync routing imports from dataset-service
+      description: Fetches latest validated CAIDA datasets (pfx2as IPv4/IPv6, as-org) from dataset-service and imports. One result per source. rows_persisted may be 0 for valid idempotent runs.
+      operationId: syncRoutingImports
+      responses:
+        '200':
+          description: Sync completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+
+components:
+  schemas:
+    ByIPResponse:
+      type: object
+      properties:
+        ip:
+          type: string
+        matched_prefix:
+          type: string
+        prefix_length:
+          type: integer
+        asn_raw:
+          type: string
+        primary_asn:
+          type: integer
+          format: int64
+        asn_type:
+          type: string
+          enum: [single, multi]
+        as_name:
+          type: string
+        org_name:
+          type: string
+        routing_dataset:
+          type: string
+          format: uuid
+        metadata_dataset:
+          type: string
+          format: uuid
+    ASNMetaResponse:
+      type: object
+      properties:
+        asn:
+          type: integer
+          format: int64
+        as_name:
+          type: string
+        org_name:
+          type: string
+        source:
+          type: string
+        source_dataset_id:
+          type: string
+          format: uuid
+    ASNPrefixesResponse:
+      type: object
+      properties:
+        asn:
+          type: integer
+          format: int64
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrefixItem'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+        dataset_id:
+          type: string
+          format: uuid
+    PrefixItem:
+      type: object
+      properties:
+        prefix:
+          type: string
+        prefix_length:
+          type: integer
+        asn_raw:
+          type: string
+        asn_type:
+          type: string
+    SyncResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncResultItem'
+    SyncResultItem:
+      type: object
+      properties:
+        source:
+          type: string
+        dataset_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        rows_persisted:
+          type: integer
+          format: int64
+        duration_ms:
+          type: integer
+          format: int64
+        error:
+          type: string
