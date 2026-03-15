@@ -187,6 +187,7 @@ services:
     restart: unless-stopped
 
   # CLI: no Go required on host. Use: docker compose run heimdallctl install | status | execution list | ...
+  # To build/rebuild after code changes: docker compose --profile cli build heimdallctl
   heimdallctl:
     profiles:
       - cli
