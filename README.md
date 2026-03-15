@@ -1,54 +1,35 @@
-# Heimdall — Exposure Intelligence Platform
+<div align="center" markdown="1">
 
-**Internet infrastructure analysis, asset discovery, and scanning orchestration.** Heimdall provides a structured, up-to-date view of global IP space: RIR and CAIDA dataset versioning, scope and routing APIs, target materialization, campaign control, and a distributed execution plane with scalable scan workers.
+➡️ [Installation](#-installation) | [Usage](#-usage) | [API Reference](#-api-reference) | [Español](README.es.md) ⬅️
 
-*[Versión en español](README.es.md)*
+# Heimdall
 
----
+**Exposure intelligence for internet infrastructure.**
 
-## Overview
+**Structured IP space, target materialization, distributed scan orchestration.**
 
-Heimdall is an exposure intelligence platform for security and network teams. It ingests authoritative and observed data (RIR delegated statistics, CAIDA prefix-to-AS and AS-org), resolves IP-to-country and IP-to-ASN, materializes targets (e.g. by country or ASN), and runs scan campaigns via a control plane (campaign-service) and execution plane (execution-service + scan-workers). Workers pull jobs, run port discovery (ZMap or Masscan), and report results. The system is API-first, containerized, and designed to scale.
+![Go][badge-go] ![License MIT][badge-license] ![Docker][badge-docker]
 
----
-
-## Features
-
-- **Dataset pipeline** — Fetch and version RIR delegated stats (RIPE, ARIN, APNIC, LACNIC, AFRINIC) and CAIDA (pfx2as IPv4/IPv6, as-org). Idempotent, artifact storage, validation.
-- **Scope service** — Assigned resource inventory: import blocks by registry, IP→country resolution, country and ASN inventory (blocks, summary).
-- **Routing service** — Observed routing state: CAIDA import, IP→ASN (longest-prefix match), ASN metadata, ASN→prefixes.
-- **Target service** — Define targets (include/exclude by country, ASN, prefix, world). Materialize to immutable CIDR snapshots; diff between snapshots.
-- **Campaign service** — Control plane: campaigns (target + scan profile), scan profiles, runs. Manual or scheduled launch; dispatch to Redis Streams.
-- **Execution service** — Execution plane: consume runs from Redis, create executions and jobs, worker registration, heartbeat, job claim/complete/fail/renew, requeue and cancel.
-- **Scan workers** — Pull-based agents: register, claim jobs, run port discovery (ZMap or Masscan), report observations. Scale horizontally; multiple workers and concurrency per worker supported.
-- **heimdallctl** — Official CLI: status, dataset fetch/list, scope and routing sync, target and campaign management, **install** (full dataset + sync), **execution** and **worker** management (list, get, jobs, requeue, cancel, update concurrency).
+</div>
 
 ---
 
-## Services
+# 🤔 What is this?
 
-| Service | Purpose | Port |
-|--------|---------|------|
-| **dataset-service** | Fetch, validate, version RIR and CAIDA datasets; serve artifacts | 8080 |
-| **scope-service** | Assigned inventory: import blocks, IP→country, country/ASN inventory, sync | 8081 |
-| **routing-service** | Observed routing: import pfx2as + as-org, IP→ASN (LPM), ASN metadata/prefixes | 8082 |
-| **target-service** | Target definitions, materialization to CIDR snapshots, diff | 8083 |
-| **campaign-service** | Control plane: campaigns, scan profiles, runs; dispatch to Redis | 8084 |
-| **execution-service** | Execution plane: runs→executions/jobs, worker API (claim, complete, fail, requeue, cancel) | 8085 |
-| **Redis** | Stream `heimdall:campaign:runs` (campaign→execution) | 6379 |
-| **PostgreSQL** | Datasets, scope, routing, target, campaign, execution DBs | 5432 |
+Heimdall is an **exposure intelligence platform** for security and network teams. It gives you a structured, up-to-date view of global IP space and runs internet-scale scan campaigns with pluggable workers.
+
+- **Data layer:** Ingest RIR delegated statistics (RIPE, ARIN, APNIC, LACNIC, AFRINIC) and CAIDA (prefix-to-AS, AS-org). Resolve **IP→country** and **IP→ASN**, and keep country/ASN inventory.
+- **Targets:** Define scopes (include/exclude by country, ASN, prefix, world). **Materialize** to immutable CIDR snapshots and diff between them.
+- **Campaigns:** Create campaigns (target + scan profile), launch manually or on a schedule. Runs are dispatched to a queue.
+- **Execution plane:** Workers pull jobs, run port discovery (**ZMap** or **Masscan**), and report observations. Scale by adding workers or raising concurrency. Results are stored per job.
+
+Everything is **API-first** and **containerized**. One CLI, **heimdallctl**, drives install, sync, and operations (executions, workers, requeue, cancel).
 
 ---
 
-## Requirements
+# 🛠️ Installation
 
-- **Go 1.22+** (local build and tests)
-- **PostgreSQL 15+**
-- **Docker & Docker Compose** (recommended)
-
----
-
-## Quick start (Docker)
+## Docker (recommended)
 
 From the project root:
 
@@ -57,30 +38,92 @@ cd deployments/docker
 docker compose up --build -d
 ```
 
-This starts Postgres (with all DBs), dataset-, scope-, routing-, target-, campaign-, and execution-service, Redis, and (by default) one scan-worker. Volumes: `postgres_data`, `dataset_artifacts`.
+This starts PostgreSQL, Redis, dataset-, scope-, routing-, target-, campaign-, and execution-service, plus one scan-worker.
 
-**One-command setup (datasets + scope/routing sync):**
+## One-command setup (datasets + sync)
+
+After the stack is up, run the official CLI to fetch all RIR + CAIDA datasets, wait for validation, and sync scope and routing:
 
 ```bash
-# Using heimdallctl via Docker (from repo root)
-docker compose -f deployments/docker/docker-compose.yml --profile cli run --rm heimdallctl install
-# Or with the wrapper:
+# From repo root — heimdallctl via Docker
 ./scripts/heimdallctl.sh install
-# Or: make ctl install
+# or
+make ctl install
 ```
 
-`heimdallctl install` fetches RIR and CAIDA datasets, waits for them to be validated, then syncs scope and routing in parallel. Use `--skip-wait` to skip the wait step.
+Use `install --skip-wait` to skip waiting for datasets. Optional config: `HEIMDALL_*_URL` env vars or `~/.config/heimdall/config.yaml`.
+
+## Local build (no Docker)
+
+- **Go 1.22+**, **PostgreSQL 15+**, **Redis**
+- Create DBs: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service`, `heimdall_execution_service`
+- Copy `configs/.env.example` to `.env`, set DSNs and service URLs
+- Run each service: `go run ./cmd/dataset-service`, `./cmd/scope-service`, etc.; optionally `./cmd/scan-worker`
+- CLI: `go build -o bin/heimdallctl ./cmd/heimdallctl`
 
 ---
 
-## Basic usage flow
+## ‼️ Important links
 
-1. **Datasets** — Fetch RIR and/or CAIDA, then sync scope and routing (or use `heimdallctl install` once).
+| Installation | Usage | API (OpenAPI) | Spanish |
+| :----------: | :---: | :------------: | :-----: |
+| [↑ Installation](#-installation) | [↑ Usage](#-usage) | [api/openapi/](api/openapi/) | [README.es.md](README.es.md) |
+
+---
+
+## 🙋 Table of contents
+
+- [What is this?](#-what-is-this)
+- [Installation](#-installation)
+- [Features](#-features)
+- [Why Heimdall?](#-why-heimdall)
+- [Usage](#-usage)
+- [heimdallctl](#-heimdallctl-cli)
+- [API reference](#-api-reference)
+- [Services](#-services)
+- [Scan workers](#-scan-workers)
+- [Local development](#-local-development)
+- [License](#-license)
+
+---
+
+# ✨ Features
+
+- **Dataset pipeline** — Fetch and version RIR and CAIDA datasets. Idempotent, validated, artifact storage.
+- **Scope service** — Assigned inventory: IP→country, country/ASN blocks and summary, sync from dataset-service.
+- **Routing service** — Observed routing: CAIDA import, IP→ASN (LPM), ASN metadata, ASN→prefixes.
+- **Target service** — Define targets (country, ASN, prefix, world). Materialize to CIDR snapshots; diff between snapshots.
+- **Campaign service** — Control plane: campaigns, scan profiles, runs. Manual or scheduled launch; dispatch to Redis Streams.
+- **Execution service** — Execution plane: consume runs, create executions and jobs; worker register, heartbeat, claim, complete/fail/renew, **requeue** and **cancel**.
+- **Scan workers** — Pull-based; ZMap or Masscan; horizontal scale and per-worker concurrency.
+- **heimdallctl** — Status, **install** (datasets + sync), dataset/scope/routing/target/campaign, **execution** and **worker** (list, jobs, requeue, cancel, update concurrency).
+
+---
+
+# 🔭 Why Heimdall?
+
+## Data you can trust
+
+Scope comes from **RIR delegated statistics**; routing from **CAIDA** (BGP-derived). You get IP→country and IP→ASN with clear semantics (assigned vs observed). Targets materialize to concrete CIDR sets you can diff and audit.
+
+## Scale out
+
+Workers **pull** jobs and renew leases while they work. Add more containers or raise concurrency; the execution-service assigns jobs with `SKIP LOCKED`. No single bottleneck.
+
+## One CLI
+
+**heimdallctl** talks to every service over HTTP. Run `install` once to bootstrap datasets and sync; then use `execution list`, `execution jobs`, `worker list`, `worker update --max-concurrency`, `execution requeue` / `execution cancel` without touching the DB.
+
+---
+
+# 🤸 Usage
+
+1. **Install** — `heimdallctl install` (or fetch RIR/CAIDA and sync scope + routing manually).
 2. **Target** — Create a target (e.g. country ES), materialize to get a CIDR snapshot.
 3. **Campaign** — Create a scan profile (e.g. portscan-basic), create a campaign (target + profile, schedule manual), launch.
-4. **Execution** — execution-service consumes the run from Redis, creates an execution and jobs; scan-workers claim jobs, run ZMap/Masscan, report results. Observations are stored in job `result_summary`.
+4. **Execution** — execution-service consumes the run from Redis, creates an execution and jobs; scan-workers claim jobs, run ZMap/Masscan, report observations in `result_summary`.
 
-Example (curl; replace IDs as needed):
+Quick curl flow (replace `<ids>`):
 
 ```bash
 # Target
@@ -95,7 +138,7 @@ curl -X POST "http://localhost:8084/v1/campaigns" -H "Content-Type: application/
   -d '{"name":"Spain portscan","target_id":"<target_id>","scan_profile_id":"<profile_id>","schedule_type":"manual","materialization_policy":"use_latest"}'
 curl -X POST "http://localhost:8084/v1/campaigns/<campaign_id>/launch"
 
-# Execution / workers (list executions, list jobs, requeue failed, cancel)
+# Execution / workers
 curl "http://localhost:8085/v1/executions?limit=10"
 curl "http://localhost:8085/v1/executions/<execution_id>/jobs?limit=20"
 curl -X POST "http://localhost:8085/v1/executions/<execution_id>/requeue"
@@ -105,18 +148,14 @@ curl "http://localhost:8085/v1/workers"
 
 ---
 
-## heimdallctl (CLI)
+# 🎛️ heimdallctl (CLI)
 
-Official CLI for operating Heimdall over HTTP. Build locally: `go build -o bin/heimdallctl ./cmd/heimdallctl`. Or run via Docker: `./scripts/heimdallctl.sh <cmd>` or `make ctl <cmd>`.
-
-**Configuration:** Set `HEIMDALL_DATASET_URL`, `HEIMDALL_SCOPE_URL`, `HEIMDALL_ROUTING_URL`, `HEIMDALL_TARGET_URL`, `HEIMDALL_CAMPAIGN_URL`, `HEIMDALL_EXECUTION_URL` (defaults: localhost 8080–8085). Optional: `~/.config/heimdall/config.yaml` or `.heimdall.yaml`.
-
-**Commands (summary):**
+Run via Docker: `./scripts/heimdallctl.sh <cmd>` or `make ctl <cmd>`. Or build: `go build -o bin/heimdallctl ./cmd/heimdallctl`.
 
 | Area | Commands |
 |------|----------|
-| **Status** | `status` — health of all services |
-| **Install** | `install` — fetch RIR + CAIDA, wait for validated, sync scope & routing; `install --skip-wait` to skip wait |
+| **Status** | `status` |
+| **Install** | `install` — fetch RIR + CAIDA, wait validated, sync scope & routing; `install --skip-wait` |
 | **Dataset** | `dataset fetch --registry=all \| ripencc \| ...`, `dataset fetch --source=caida_pfx2as_ipv4 \| ...`, `dataset list`, `dataset get <id>` |
 | **Scope** | `scope sync`, `scope by-ip <ip>`, `scope country summary \| blocks \| asns \| asn-summary <cc>` |
 | **Routing** | `routing sync`, `routing by-ip <ip>`, `routing asn <asn>`, `routing asn prefixes <asn>` |
@@ -129,42 +168,63 @@ Use `-o json` for machine-readable output.
 
 ---
 
-## API reference (OpenAPI)
+# 📡 API reference
 
-Full semantics and request/response schemas:
+OpenAPI specs (request/response schemas and semantics):
 
-- `api/openapi/dataset-service.yaml`
-- `api/openapi/scope-service.yaml`
-- `api/openapi/routing-service.yaml`
-- `api/openapi/target-service.yaml`
-- `api/openapi/campaign-service.yaml`
-- `api/openapi/execution-service.yaml`
+| Service | Spec |
+|--------|------|
+| dataset | [api/openapi/dataset-service.yaml](api/openapi/dataset-service.yaml) |
+| scope | [api/openapi/scope-service.yaml](api/openapi/scope-service.yaml) |
+| routing | [api/openapi/routing-service.yaml](api/openapi/routing-service.yaml) |
+| target | [api/openapi/target-service.yaml](api/openapi/target-service.yaml) |
+| campaign | [api/openapi/campaign-service.yaml](api/openapi/campaign-service.yaml) |
+| execution | [api/openapi/execution-service.yaml](api/openapi/execution-service.yaml) |
 
-Execution-service covers: workers (list, register, get, PATCH heartbeat/max_concurrency, list jobs), jobs (claim, complete, fail, renew), executions (list, get, list jobs, **requeue**, **cancel**).
+Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency, list jobs), jobs (claim, complete, fail, renew), executions (list, get, list jobs, **requeue**, **cancel**).
 
 ---
 
-## Local development (without Docker)
+# 📦 Services
 
-1. Create Postgres databases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service`, `heimdall_campaign_service`, `heimdall_execution_service`.
-2. Copy `configs/.env.example` to `.env` and set DSNs and service URLs.
-3. Run services (each in its own terminal): `go run ./cmd/dataset-service`, `./cmd/scope-service`, `./cmd/routing-service`, `./cmd/target-service`, `./cmd/campaign-service`, `./cmd/execution-service`; optionally `./cmd/scan-worker`.
+| Service | Purpose | Port |
+|--------|---------|------|
+| **dataset-service** | Fetch, validate, version RIR and CAIDA; serve artifacts | 8080 |
+| **scope-service** | Assigned inventory: import, IP→country, country/ASN | 8081 |
+| **routing-service** | Observed routing: pfx2as, as-org, IP→ASN, ASN metadata/prefixes | 8082 |
+| **target-service** | Targets, materialization, snapshots, diff | 8083 |
+| **campaign-service** | Campaigns, scan profiles, runs; dispatch to Redis | 8084 |
+| **execution-service** | Executions, jobs, workers (claim, complete, fail, requeue, cancel) | 8085 |
+| **Redis** | Stream `heimdall:campaign:runs` | 6379 |
+| **PostgreSQL** | All service DBs | 5432 |
+
+---
+
+# 🔧 Scan workers
+
+Workers register with execution-service, heartbeat, and **pull** jobs. Each job has prefixes and port config; the worker runs **ZMap** or **Masscan** (`SCAN_ENGINE=zmap|masscan`, default masscan), parses results into observations (IP, port, status), and sends them in `result_summary`. Observations are stored in `execution_jobs.result_summary`.
+
+**Scale:** more replicas (`docker compose up -d --scale scan-worker=5`) and/or higher `WORKER_MAX_CONCURRENCY` per worker.
+
+---
+
+# 🧪 Local development
+
+1. Create all Postgres DBs (see [Installation](#-installation)).
+2. Copy `configs/.env.example` to `.env`, set DSNs and service URLs.
+3. Run services in separate terminals: `go run ./cmd/dataset-service`, `./cmd/scope-service`, `./cmd/routing-service`, `./cmd/target-service`, `./cmd/campaign-service`, `./cmd/execution-service`; optionally `./cmd/scan-worker`.
 4. Tests: `go test ./...`
 
 ---
 
-## Scan workers
-
-Workers register with execution-service, send heartbeats, and claim jobs (pull). Each job contains prefixes and port/config; the worker runs **ZMap** or **Masscan** (configurable via `SCAN_ENGINE=zmap|masscan`, default masscan), parses results into observations (IP, port, status), and reports them in `result_summary`. Observations are stored in `execution_jobs.result_summary`. Scale by running more worker containers (`docker compose up -d --scale scan-worker=5`) and/or increasing `WORKER_MAX_CONCURRENCY` per worker.
-
----
-
-## Project status
-
-**Phase:** Development. Full pipeline from datasets to scope/routing, targets, campaigns, execution plane, and scan workers is implemented. Port discovery (ZMap, Masscan), job leasing, requeue, cancel, and heimdallctl install/execution/worker are in place. Future work may add more scan types, result aggregation APIs, and UI.
-
----
-
-## License
+# 📄 License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+<!-- Badges -->
+
+[badge-go]: https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go
+[badge-license]: https://img.shields.io/badge/License-MIT-green?style=flat
+[badge-docker]: https://img.shields.io/badge/Docker-Compose-2496ED?style=flat&logo=docker
