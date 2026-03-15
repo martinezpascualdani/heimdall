@@ -8,6 +8,7 @@ configs/.env
 /dataset-service
 /scope-service
 /routing-service
+/target-service
 /heimdall
 /heimdallctl
 *.exe

@@ -1,6 +1,19 @@
 package iso3166
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
+
+// AllAlpha2 returns all valid ISO 3166-1 alpha-2 country codes, sorted ascending (for deterministic iteration e.g. "world").
+func AllAlpha2() []string {
+	out := make([]string, 0, len(alpha2Set))
+	for cc := range alpha2Set {
+		out = append(out, cc)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // ValidAlpha2 returns true if the given string is a valid ISO 3166-1 alpha-2 country code.
 // The input is normalized to uppercase before lookup; exactly two characters are required.

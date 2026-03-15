@@ -17,7 +17,7 @@ import (
 func getTestDSN(t *testing.T) string {
 	dsn := os.Getenv("DATASET_DB_DSN")
 	if dsn == "" {
-		dsn = "postgres://heimdall:heimdall@localhost:5432/heimdall_datasets?sslmode=disable"
+		dsn = "postgres://heimdall:heimdall@localhost:5432/heimdall_datasets_test?sslmode=disable"
 	}
 	return dsn
 }

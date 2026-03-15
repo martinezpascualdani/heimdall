@@ -27,6 +27,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.RoutingURL != DefaultRoutingURL {
 		t.Errorf("RoutingURL: got %q, want %q", c.RoutingURL, DefaultRoutingURL)
 	}
+	if c.TargetURL != DefaultTargetURL {
+		t.Errorf("TargetURL: got %q, want %q", c.TargetURL, DefaultTargetURL)
+	}
 	if c.Timeout != DefaultTimeout {
 		t.Errorf("Timeout: got %v, want %v", c.Timeout, DefaultTimeout)
 	}
@@ -43,6 +46,7 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	os.Setenv("HEIMDALL_DATASET_URL", "http://dataset:8080")
 	os.Setenv("HEIMDALL_SCOPE_URL", "http://scope:8081")
 	os.Setenv("HEIMDALL_ROUTING_URL", "http://routing:8082")
+	os.Setenv("HEIMDALL_TARGET_URL", "http://target:8083")
 	os.Setenv("HEIMDALL_TIMEOUT", "60")
 
 	c := Load()
@@ -54,6 +58,9 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if c.RoutingURL != "http://routing:8082" {
 		t.Errorf("RoutingURL: got %q", c.RoutingURL)
+	}
+	if c.TargetURL != "http://target:8083" {
+		t.Errorf("TargetURL: got %q", c.TargetURL)
 	}
 	if c.Timeout != 60*time.Second {
 		t.Errorf("Timeout: got %v", c.Timeout)
@@ -72,6 +79,7 @@ func TestLoad_FallbackFile(t *testing.T) {
 	content := `dataset_url: http://from-file-dataset:8080
 scope_url: http://from-file-scope:8081
 routing_url: http://from-file-routing:8082
+target_url: http://from-file-target:8083
 timeout_seconds: 45
 `
 	if err := os.WriteFile(fallback, []byte(content), 0644); err != nil {
@@ -87,6 +95,9 @@ timeout_seconds: 45
 	}
 	if c.RoutingURL != "http://from-file-routing:8082" {
 		t.Errorf("RoutingURL: got %q", c.RoutingURL)
+	}
+	if c.TargetURL != "http://from-file-target:8083" {
+		t.Errorf("TargetURL: got %q", c.TargetURL)
 	}
 	if c.Timeout != 45*time.Second {
 		t.Errorf("Timeout: got %v", c.Timeout)

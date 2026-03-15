@@ -19,6 +19,7 @@ type Client struct {
 	dataset string
 	scope   string
 	routing string
+	target  string
 }
 
 // New builds a Client from config. Base URLs are trimmed of trailing slashes.
@@ -27,10 +28,11 @@ func New(cfg *config.Config) *Client {
 		cfg = config.Load()
 	}
 	c := &Client{
-		cfg:    cfg,
+		cfg:     cfg,
 		dataset: strings.TrimSuffix(cfg.DatasetURL, "/"),
 		scope:   strings.TrimSuffix(cfg.ScopeURL, "/"),
 		routing: strings.TrimSuffix(cfg.RoutingURL, "/"),
+		target:  strings.TrimSuffix(cfg.TargetURL, "/"),
 	}
 	c.http = &http.Client{Timeout: cfg.Timeout}
 	return c
@@ -91,8 +93,99 @@ func (c *Client) get(ctx context.Context, baseURL, path string, out interface{})
 
 // post performs POST and decodes JSON into out. Returns apiError on 4xx/5xx.
 func (c *Client) post(ctx context.Context, baseURL, path string, out interface{}) error {
+	return c.postBody(ctx, baseURL, path, nil, out)
+}
+
+// postBody performs POST with JSON body and decodes response into out.
+func (c *Client) postBody(ctx context.Context, baseURL, path string, body interface{}, out interface{}) error {
 	url := baseURL + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		bodyReader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
+	if err != nil {
+		return err
+	}
+	if bodyReader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		msg := string(respBody)
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &errBody)
+		if errBody.Error != "" {
+			msg = errBody.Error
+		}
+		return &apiError{StatusCode: resp.StatusCode, Body: string(respBody), Message: msg}
+	}
+	if out != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
+
+// put performs PUT with JSON body and decodes response into out.
+func (c *Client) put(ctx context.Context, baseURL, path string, body interface{}, out interface{}) error {
+	url := baseURL + path
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		bodyReader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bodyReader)
+	if err != nil {
+		return err
+	}
+	if bodyReader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		msg := string(respBody)
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &errBody)
+		if errBody.Error != "" {
+			msg = errBody.Error
+		}
+		return &apiError{StatusCode: resp.StatusCode, Body: string(respBody), Message: msg}
+	}
+	if out != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return fmt.Errorf("decode response: %w", err)
+		}
+	}
+	return nil
+}
+
+// delete performs DELETE. Returns apiError on 4xx/5xx.
+func (c *Client) delete(ctx context.Context, baseURL, path string) error {
+	url := baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		return err
 	}
@@ -101,8 +194,8 @@ func (c *Client) post(ctx context.Context, baseURL, path string, out interface{}
 		return err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
 		msg := string(body)
 		var errBody struct {
 			Error string `json:"error"`
@@ -111,12 +204,7 @@ func (c *Client) post(ctx context.Context, baseURL, path string, out interface{}
 		if errBody.Error != "" {
 			msg = errBody.Error
 		}
-		return &apiError{StatusCode: resp.StatusCode, Body: string(body), Message: msg}
-	}
-	if out != nil && len(body) > 0 {
-		if err := json.Unmarshal(body, out); err != nil {
-			return fmt.Errorf("decode response: %w", err)
-		}
+		return &apiError{StatusCode: resp.StatusCode, Body: msg, Message: msg}
 	}
 	return nil
 }
@@ -156,6 +244,11 @@ func (c *Client) ScopeHealth(ctx context.Context) HealthResult {
 // RoutingHealth calls GET /health on routing-service.
 func (c *Client) RoutingHealth(ctx context.Context) HealthResult {
 	return c.health(ctx, c.routing)
+}
+
+// TargetHealth calls GET /health on target-service.
+func (c *Client) TargetHealth(ctx context.Context) HealthResult {
+	return c.health(ctx, c.target)
 }
 
 func (c *Client) health(ctx context.Context, baseURL string) HealthResult {

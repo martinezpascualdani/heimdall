@@ -1,0 +1,447 @@
+openapi: 3.0.3
+info:
+  title: Heimdall Target Service API
+  version: 0.1.0
+  description: |
+    **target-service:** Persistent target definitions (rules: include/exclude by country, ASN, prefix, world),
+    materialization to CIDR snapshot sets, and diff between snapshots. Consumes scope-service and routing-service.
+    **Definition vs materialization:** A target is a reusable definition; materialization is the computed set of prefixes at a point in time. Snapshots are immutable.
+    **Exclusion by prefix (v1):** Exclusion by prefix removes only entire materialized prefixes that are contained in (or equal to) the exclusion CIDR. The service does **not** perform CIDR subtraction or splitting of larger prefixes (e.g. include 10.0.0.0/8 + exclude 10.1.0.0/16 leaves 10.0.0.0/8 in the set).
+
+paths:
+  /v1/targets:
+    post:
+      summary: Create target
+      operationId: createTarget
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTargetRequest'
+      responses:
+        '201':
+          description: Target created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetResponse'
+        '400':
+          description: Invalid body or rules
+    get:
+      summary: List targets
+      description: By default only active=true. Use include_inactive=true to include inactive.
+      operationId: listTargets
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: include_inactive
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: List of targets with rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TargetResponse'
+                  count:
+                    type: integer
+
+  /v1/targets/{id}:
+    get:
+      summary: Get target with rules
+      operationId: getTarget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Target and rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetResponse'
+        '404':
+          description: Target not found
+    put:
+      summary: Update target (full replacement)
+      description: v1 replaces name, description, and rules entirely.
+      operationId: updateTarget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTargetRequest'
+      responses:
+        '200':
+          description: Target updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetResponse'
+        '404':
+          description: Target not found
+    delete:
+      summary: Soft delete target
+      description: Sets active=false. Idempotent; success even if already inactive.
+      operationId: deleteTarget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Target deactivated
+
+  /v1/targets/{id}/materialize:
+    post:
+      summary: Materialize target
+      description: v1 synchronous. Computes prefix set from rules (scope + routing), persists snapshot and entries.
+      operationId: materializeTarget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Materialization completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  materialization_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    example: completed
+                  total_prefix_count:
+                    type: integer
+                  materialized_at:
+                    type: string
+                    format: date-time
+        '404':
+          description: Target not found
+        '500':
+          description: Materialization failed
+
+  /v1/targets/{id}/materializations:
+    get:
+      summary: List materializations (snapshots)
+      operationId: listMaterializations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of snapshots (metadata only)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MaterializationResponse'
+                  count:
+                    type: integer
+
+  /v1/targets/{id}/materializations/{mid}:
+    get:
+      summary: Get materialization metadata
+      description: Does not include prefixes; use .../prefixes for that.
+      operationId: getMaterialization
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Snapshot metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterializationResponse'
+        '404':
+          description: Not found
+
+  /v1/targets/{id}/materializations/{mid}/prefixes:
+    get:
+      summary: List prefixes (paginated)
+      operationId: listPrefixes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: mid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated prefixes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  materialization_id:
+                    type: string
+                    format: uuid
+                  count:
+                    type: integer
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  has_more:
+                    type: boolean
+                  items:
+                    type: array
+                    items:
+                      type: string
+                      description: CIDR prefix
+        '404':
+          description: Not found
+
+  /v1/targets/{id}/materializations/diff:
+    get:
+      summary: Diff between two snapshots
+      description: Only snapshots of the same target. Returns added_count, removed_count, IDs/timestamps, and added/removed prefix lists. 400 if from/to belong to different targets.
+      operationId: diffMaterializations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Earlier materialization ID
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Later materialization ID
+      responses:
+        '200':
+          description: Diff result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from_materialization_id:
+                    type: string
+                    format: uuid
+                  to_materialization_id:
+                    type: string
+                    format: uuid
+                  from_materialized_at:
+                    type: string
+                    format: date-time
+                  to_materialized_at:
+                    type: string
+                    format: date-time
+                  added_count:
+                    type: integer
+                  removed_count:
+                    type: integer
+                  added:
+                    type: array
+                    items:
+                      type: string
+                  removed:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: Invalid from/to or different targets
+        '404':
+          description: Materialization not found
+
+components:
+  schemas:
+    CreateTargetRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleInput'
+    RuleInput:
+      type: object
+      required:
+        - kind
+        - selector_type
+      properties:
+        kind:
+          type: string
+          enum: [include, exclude]
+        selector_type:
+          type: string
+          enum: [country, asn, prefix, world]
+        selector_value:
+          type: string
+          description: ISO country (2 letters), ASN as string, CIDR, or empty for world
+        address_family:
+          type: string
+          enum: [ipv4, ipv6, all]
+          default: all
+        rule_order:
+          type: integer
+          default: 0
+    TargetRuleResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+        selector_type:
+          type: string
+        selector_value:
+          type: string
+        address_family:
+          type: string
+        rule_order:
+          type: integer
+    TargetResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        active:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/TargetRuleResp'
+    MaterializationResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        target_id:
+          type: string
+          format: uuid
+        materialized_at:
+          type: string
+          format: date-time
+        total_prefix_count:
+          type: integer
+        status:
+          type: string
+          enum: [running, completed, failed]
+        error_message:
+          type: string
+        scope_snapshot_ref:
+          type: object
+          description: Traceability of scope inputs used
+        routing_snapshot_ref:
+          type: object
+          description: Traceability of routing inputs used

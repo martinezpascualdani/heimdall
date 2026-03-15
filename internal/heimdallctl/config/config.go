@@ -13,6 +13,7 @@ const (
 	DefaultDatasetURL = "http://localhost:8080"
 	DefaultScopeURL   = "http://localhost:8081"
 	DefaultRoutingURL = "http://localhost:8082"
+	DefaultTargetURL  = "http://localhost:8083"
 	DefaultTimeout    = 30 * time.Second
 )
 
@@ -21,6 +22,7 @@ type Config struct {
 	DatasetURL string        `yaml:"dataset_url" json:"dataset_url"`
 	ScopeURL   string        `yaml:"scope_url" json:"scope_url"`
 	RoutingURL string        `yaml:"routing_url" json:"routing_url"`
+	TargetURL  string        `yaml:"target_url" json:"target_url"`
 	Timeout    time.Duration `yaml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
 }
 
@@ -29,6 +31,7 @@ type fileConfig struct {
 	DatasetURL string `yaml:"dataset_url"`
 	ScopeURL   string `yaml:"scope_url"`
 	RoutingURL string `yaml:"routing_url"`
+	TargetURL  string `yaml:"target_url"`
 	TimeoutSec int    `yaml:"timeout_seconds"`
 }
 
@@ -39,6 +42,7 @@ func Load() *Config {
 		DatasetURL: DefaultDatasetURL,
 		ScopeURL:   DefaultScopeURL,
 		RoutingURL: DefaultRoutingURL,
+		TargetURL:  DefaultTargetURL,
 		Timeout:    DefaultTimeout,
 	}
 
@@ -63,6 +67,9 @@ func Load() *Config {
 	}
 	if v := os.Getenv("HEIMDALL_ROUTING_URL"); v != "" {
 		c.RoutingURL = v
+	}
+	if v := os.Getenv("HEIMDALL_TARGET_URL"); v != "" {
+		c.TargetURL = v
 	}
 	if v := os.Getenv("HEIMDALL_TIMEOUT"); v != "" {
 		if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
@@ -91,6 +98,9 @@ func applyFile(c *Config, path string) bool {
 	}
 	if f.RoutingURL != "" {
 		c.RoutingURL = f.RoutingURL
+	}
+	if f.TargetURL != "" {
+		c.TargetURL = f.TargetURL
 	}
 	if f.TimeoutSec > 0 {
 		c.Timeout = time.Duration(f.TimeoutSec) * time.Second

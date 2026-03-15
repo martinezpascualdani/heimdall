@@ -321,11 +321,41 @@ func (s *PostgresStore) UpsertBlock(b *domain.ScopeBlock) error {
 	_, err := s.db.Exec(`
 		INSERT INTO scope_blocks (dataset_id, scope_type, scope_value, address_family, block_raw_identity, start_value, value_field, normalized_cidrs, status, cc, date_value, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		ON CONFLICT (dataset_id, scope_type, scope_value, block_raw_identity) DO NOTHING
+		ON CONFLICT (dataset_id, scope_type, scope_value, block_raw_identity) DO UPDATE SET normalized_cidrs = EXCLUDED.normalized_cidrs
 	`, b.DatasetID, b.ScopeType, b.ScopeValue, b.AddressFamily, b.BlockRawIdentity, b.Start, b.Value, pq.Array(b.NormalizedCIDRs), b.Status, b.CC, b.Date, b.CreatedAt)
 	return err
 }
 
+// ListBlocksWithEmptyNormalized returns blocks where normalized_cidrs is null or empty (for backfill).
+func (s *PostgresStore) ListBlocksWithEmptyNormalized(limit int) ([]*domain.ScopeBlock, error) {
+	rows, err := s.db.Query(`
+		SELECT id, dataset_id, scope_type, scope_value, address_family, block_raw_identity, start_value, value_field, normalized_cidrs, status, cc, date_value, created_at
+		FROM scope_blocks
+		WHERE normalized_cidrs IS NULL OR normalized_cidrs = '{}'
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.ScopeBlock
+	for rows.Next() {
+		var b domain.ScopeBlock
+		var cidrs pq.StringArray
+		if err := rows.Scan(&b.ID, &b.DatasetID, &b.ScopeType, &b.ScopeValue, &b.AddressFamily, &b.BlockRawIdentity, &b.Start, &b.Value, &cidrs, &b.Status, &b.CC, &b.Date, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		b.NormalizedCIDRs = []string(cidrs)
+		out = append(out, &b)
+	}
+	return out, rows.Err()
+}
+
+// UpdateBlockNormalizedCIDRs sets normalized_cidrs for a block (backfill).
+func (s *PostgresStore) UpdateBlockNormalizedCIDRs(id uuid.UUID, cidrs []string) error {
+	_, err := s.db.Exec(`UPDATE scope_blocks SET normalized_cidrs = $2 WHERE id = $1`, id, pq.Array(cidrs))
+	return err
+}
 
 // ListBlocksByScope returns blocks for scope_type and scope_value, filtered by datasetIDs (e.g. latest per registry) and optional address_family.
 // Order is address_family, start_value as IP (numeric order), block_raw_identity for human-friendly and deterministic output.

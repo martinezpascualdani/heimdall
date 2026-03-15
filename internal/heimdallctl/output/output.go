@@ -209,8 +209,8 @@ func PrintASNPrefixes(w io.Writer, r *client.RoutingASNPrefixesResponse) {
 	fmt.Fprintln(w)
 }
 
-// PrintStatus writes health status of the three services.
-func PrintStatus(w io.Writer, dataset, scope, routing client.HealthResult) {
+// PrintStatus writes health status of dataset, scope, routing, and target services.
+func PrintStatus(w io.Writer, dataset, scope, routing, target client.HealthResult) {
 	section(w, "Service status")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "  SERVICE\tSTATUS\tDETAIL")
@@ -218,6 +218,7 @@ func PrintStatus(w io.Writer, dataset, scope, routing client.HealthResult) {
 	statusRow("dataset", dataset, tw)
 	statusRow("scope", scope, tw)
 	statusRow("routing", routing, tw)
+	statusRow("target", target, tw)
 	tw.Flush()
 	fmt.Fprintln(w)
 }
@@ -386,4 +387,116 @@ func Format(s string) string {
 // OutputFormat returns the format from a flag value (e.g. -o json).
 func OutputFormat(flag string) string {
 	return Format(flag)
+}
+
+// PrintTargetList writes targets table.
+func PrintTargetList(w io.Writer, r *client.TargetListResponse) {
+	if r == nil || len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No targets.")
+		return
+	}
+	section(w, "Targets")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tNAME\tACTIVE\tRULES\tCREATED")
+	fmt.Fprintln(tw, "  ──\t────\t──────\t─────\t───────")
+	for _, t := range r.Items {
+		active := "no"
+		if t.Active {
+			active = "yes"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%d\t%s\n", t.ID, t.Name, active, len(t.Rules), t.CreatedAt)
+	}
+	tw.Flush()
+	fmt.Fprintln(w)
+}
+
+// PrintTargetGet writes a single target with rules.
+func PrintTargetGet(w io.Writer, t *client.TargetResponse) {
+	if t == nil {
+		return
+	}
+	section(w, "Target · "+t.Name)
+	kv(w, "ID", t.ID)
+	kv(w, "Name", t.Name)
+	kv(w, "Description", t.Description)
+	kv(w, "Active", fmt.Sprintf("%v", t.Active))
+	kv(w, "Created", t.CreatedAt)
+	kv(w, "Updated", t.UpdatedAt)
+	if len(t.Rules) > 0 {
+		fmt.Fprintln(w, "  Rules:")
+		for _, r := range t.Rules {
+			fmt.Fprintf(w, "    · %s %s %s\n", r.Kind, r.SelectorType, r.SelectorValue)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintTargetMaterialize writes materialize result.
+func PrintTargetMaterialize(w io.Writer, r *client.TargetMaterializeResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Materialization")
+	kv(w, "Materialization ID", r.MaterializationID)
+	kv(w, "Status", r.Status)
+	kvInt(w, "Total prefixes", int64(r.TotalPrefixCount))
+	kv(w, "Materialized at", r.MaterializedAt)
+	fmt.Fprintln(w)
+}
+
+// PrintTargetMaterializations writes materializations list.
+func PrintTargetMaterializations(w io.Writer, r *client.TargetMaterializationsResponse) {
+	if r == nil || len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No materializations.")
+		return
+	}
+	section(w, "Materializations")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tMATERIALIZED_AT\tPREFIXES\tSTATUS")
+	fmt.Fprintln(tw, "  ──\t───────────────\t────────\t──────")
+	for _, m := range r.Items {
+		fmt.Fprintf(tw, "  %s\t%s\t%d\t%s\n", m.ID, m.MaterializedAt, m.TotalPrefixCount, m.Status)
+	}
+	tw.Flush()
+	fmt.Fprintln(w)
+}
+
+// PrintTargetPrefixes writes prefixes list.
+func PrintTargetPrefixes(w io.Writer, r *client.TargetPrefixesResponse) {
+	if r == nil {
+		return
+	}
+	section(w, fmt.Sprintf("Prefixes (%d of %d)", r.Count, r.Total))
+	for _, p := range r.Items {
+		fmt.Fprintf(w, "  %s\n", p)
+	}
+	if r.HasMore {
+		fmt.Fprintf(w, "\n  … more (offset %d)\n", r.Offset)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintTargetDiff writes diff result.
+func PrintTargetDiff(w io.Writer, r *client.TargetDiffResponse) {
+	if r == nil {
+		return
+	}
+	section(w, "Diff")
+	kv(w, "From", r.FromMaterializationID+" @ "+r.FromMaterializedAt)
+	kv(w, "To", r.ToMaterializationID+" @ "+r.ToMaterializedAt)
+	kvInt(w, "Added", int64(r.AddedCount))
+	kvInt(w, "Removed", int64(r.RemovedCount))
+	if len(r.Added) > 0 {
+		fmt.Fprintln(w, "  Added prefixes:")
+		for _, p := range r.Added {
+			fmt.Fprintf(w, "    + %s\n", p)
+		}
+	}
+	if len(r.Removed) > 0 {
+		fmt.Fprintln(w, "  Removed prefixes:")
+		for _, p := range r.Removed {
+			fmt.Fprintf(w, "    - %s\n", p)
+		}
+	}
+	fmt.Fprintln(w)
 }

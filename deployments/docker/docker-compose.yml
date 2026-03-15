@@ -79,6 +79,30 @@ services:
       timeout: 3s
       retries: 3
 
+  target-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.target-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scope-service:
+        condition: service_healthy
+      routing-service:
+        condition: service_healthy
+    environment:
+      TARGET_DB_DSN: postgres://heimdall:heimdall@postgres:5432/heimdall_target_service?sslmode=disable
+      SCOPE_SERVICE_URL: http://scope-service:8081
+      ROUTING_SERVICE_URL: http://routing-service:8082
+      PORT: "8083"
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8083/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
 volumes:
   postgres_data:
   dataset_artifacts:

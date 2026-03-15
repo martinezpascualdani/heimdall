@@ -67,6 +67,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /v1/imports/backfill-normalized:
+    post:
+      summary: Backfill normalized_cidrs for existing blocks
+      description: |
+        One-time or operational endpoint. Scans scope_blocks where normalized_cidrs is null or empty,
+        computes CIDRs from start_value + value_field + address_family (same logic as import),
+        and updates the rows. Use after upgrading to a version that populates normalized_cidrs on import,
+        so that previously imported blocks get normalized CIDRs for target-service materialization.
+      operationId: backfillNormalized
+      responses:
+        '200':
+          description: Backfill completed; returns count of blocks updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+                    description: Number of blocks that had normalized_cidrs set
+        '500':
+          description: Internal error
+
   /v1/scopes/by-ip/{ip}:
     get:
       summary: Resolve IP to scope (country)

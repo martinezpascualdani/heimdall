@@ -139,6 +139,35 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	})
 
+	mux.HandleFunc("POST /v1/imports/backfill-normalized", func(w http.ResponseWriter, r *http.Request) {
+		const batchSize = 5000
+		var totalUpdated int
+		for {
+			blocks, err := store.ListBlocksWithEmptyNormalized(batchSize)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+				return
+			}
+			if len(blocks) == 0 {
+				break
+			}
+			for _, b := range blocks {
+				cidrs, err := importsvc.NormalizeBlockCIDRs(b.Start, b.Value, b.AddressFamily)
+				if err != nil || len(cidrs) == 0 {
+					continue
+				}
+				if err := store.UpdateBlockNormalizedCIDRs(b.ID, cidrs); err != nil {
+					continue
+				}
+				totalUpdated++
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]int{"updated": totalUpdated})
+	})
+
 	mux.Handle("GET /v1/scopes/by-ip/{ip}", ipResolveHandler)
 
 	mux.Handle("GET /v1/scopes/country/{cc}/blocks", blocksHandler)

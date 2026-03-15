@@ -17,6 +17,7 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 - **dataset-service** — Downloads and versions RIR delegated statistics files (`delegated-*-latest`). Validates headers, stores artifacts, and exposes them via API. Idempotent per registry/serial.
 - **scope-service** — **scope-service: assigned resource inventory.** Imports blocks from dataset-service (by `dataset_id`), persists them, and provides IP→country resolution, country inventory (blocks, summary, ASN ranges). Sync fetches latest validated per registry and imports. ASN inventory reflects RIR delegated assignments, not current BGP origin AS relationships.
 - **routing-service** — **routing-service: observed routing state.** Imports CAIDA RouteViews Prefix-to-AS (pfx2as) and AS Organizations from dataset-service. Provides IP→ASN (longest-prefix match), ASN metadata (org/name), and ASN→prefixes. Data is BGP-derived, not assignation.
+- **target-service** — Target definitions (include/exclude by country, ASN, prefix, world), materialization to CIDR snapshots, and diff between snapshots. Consumes scope-service and routing-service. Snapshots are immutable. **Exclusion by prefix (v1):** removes only entire materialized prefixes contained in the exclusion CIDR; does *not* perform CIDR subtraction or splitting.
 - **dataset-service** — Also supports CAIDA sources (`?source=caida_pfx2as_ipv4`, `caida_pfx2as_ipv6`, `caida_as_org`) for routing-service to consume.
 - **Tests** — Unit and integration tests for parser, import pipeline, storage, and handlers (tests pass with Go and optional local Postgres).
 
@@ -27,29 +28,31 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 ```
                          +------------------+
                          |   PostgreSQL     |
-                         | (3 DBs: datasets,|
-                         |  scope, routing) |
+                         | (4 DBs: datasets,|
+                         |  scope, routing, |
+                         |  target)         |
                          +--------+---------+
                                   |
-          +-----------------------+-----------------------+
-          |                       |                       |
-   +------v------+         +------v------+         +------v------+
-   | dataset-    |  HTTP   | scope-      |         | routing-    |
-   | service     |<--------| service     |         | service     |
-   | (fetch,     |         | (import,    |         | (by-ip,     |
-   |  version)   |         |  by-ip,     |         |  asn,       |
-   +------^------+         |  country)   |         |  prefixes)  |
-          |                +------------+         +-------------+
-          | FTP/HTTP (RIR)
-    RIPE NCC, ARIN, APNIC, LACNIC, AFRINIC
+     +-----------------------------+-----------------------------+------------------+
+     |                             |                             |                  |
++----v----+   HTTP   +-------------v-------------+   HTTP   +-----v-----+   HTTP   +-v----------+
+| dataset |<---------| scope-service             |<---------| target-   |<---------| routing-   |
+| service |          | (import, by-ip, country)  |          | service   |          | service    |
+| (fetch, |          +--------------------------+          | (define,  |          | (by-ip,    |
+| version)|                                               |  material-|          |  asn,      |
++----^----+                                               |  ize,     |          |  prefixes) |
+     |                                                     |  diff)    |          +------------+
+     | FTP/HTTP (RIR)                                      +-----------+
+RIPE NCC, ARIN, APNIC, LACNIC, AFRINIC
 
-    heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing
+heimdallctl (CLI)  ----HTTP---->  dataset  scope  routing  target
 ```
 
 - **dataset-service**: Talks to RIR FTP/HTTP, parses RIR format, stores artifacts and metadata in Postgres (`heimdall_datasets`). Also fetches CAIDA datasets for routing.
 - **scope-service**: Pulls artifacts from dataset-service, parses and filters blocks (country, IPv4/IPv6), stores in Postgres (`heimdall_scope_service`). Resolves IPs and serves country inventory using a **logical snapshot**: the latest imported dataset from each registry (RIPE, ARIN, APNIC, etc.) is combined into one coherent view when no `dataset_id` is given.
 - **routing-service**: Pulls CAIDA (pfx2as, as-org) from dataset-service, stores in Postgres (`heimdall_routing_service`). Exposes IP→ASN (LPM), ASN metadata, ASN→prefixes.
-- **heimdallctl**: Official CLI; queries dataset-, scope-, and routing-service over HTTP. No database or business logic; build with `go build -o bin/heimdallctl ./cmd/heimdallctl`.
+- **target-service**: Stores target definitions (rules: include/exclude by country, ASN, prefix, world) in Postgres (`heimdall_target_service`). Materializes targets by calling scope-service and routing-service, persists immutable CIDR snapshots. Supports diff between snapshots. **World** = union of RIR inventory per country (operational view, not “all BGP”). **Exclusion by prefix:** v1 only removes entire materialized prefixes contained in the exclusion CIDR; no CIDR subtraction/splitting.
+- **heimdallctl**: Official CLI; queries dataset-, scope-, routing-, and target-service over HTTP. No database or business logic; build with `go build -o bin/heimdallctl ./cmd/heimdallctl`.
 
 ---
 
@@ -60,7 +63,8 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 | **dataset-service** | Fetch, validate, version RIR and CAIDA datasets; serve artifacts | 8080         |
 | **scope-service**   | **Assigned resource inventory.** Import blocks, IP→country, country/ASN inventory, sync | 8081    |
 | **routing-service** | **Observed routing state.** Import pfx2as + as-org, IP→ASN (LPM), ASN metadata, ASN→prefixes | 8082    |
-| **PostgreSQL**      | Databases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service` | 5432   |
+| **target-service**  | Target definitions, rules, materialization to CIDR sets, snapshots and diff | 8083    |
+| **PostgreSQL**      | Databases: `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, `heimdall_target_service` | 5432   |
 
 ---
 
@@ -83,9 +87,10 @@ docker compose up --build -d
 
 This starts:
 
-1. **Postgres** (port 5432), creating `heimdall_datasets`, `heimdall_scope_service`, and `heimdall_routing_service` on first run.
+1. **Postgres** (port 5432), creating `heimdall_datasets`, `heimdall_scope_service`, `heimdall_routing_service`, and `heimdall_target_service` on first run.
 2. **dataset-service** (port 8080), after Postgres is healthy.
 3. **scope-service** (port 8081) and **routing-service** (port 8082), after dataset-service is healthy.
+4. **target-service** (port 8083), after scope and routing are healthy.
 
 Volumes: `postgres_data`, `dataset_artifacts`. No `.env` required; everything is set in `docker-compose.yml`.
 
@@ -140,6 +145,19 @@ Volumes: `postgres_data`, `dataset_artifacts`. No `.env` required; everything is
    curl "http://localhost:8082/v1/asn/prefixes/15169?limit=10"
    ```
 
+6. **Target service** — Create a target (e.g. one country), materialize it to a CIDR snapshot, list snapshots and prefixes:
+
+   ```bash
+   curl -X POST "http://localhost:8083/v1/targets" -H "Content-Type: application/json" -d '{"name":"Spain","rules":[{"kind":"include","selector_type":"country","selector_value":"ES"}]}'
+   # Use the returned target id:
+   curl -X POST "http://localhost:8083/v1/targets/<target_id>/materialize"
+   curl "http://localhost:8083/v1/targets/<target_id>/materializations?limit=10"
+   curl "http://localhost:8083/v1/targets/<target_id>/materializations/<mid>/prefixes?limit=10"
+   curl "http://localhost:8083/v1/targets/<target_id>/materializations/diff?from=<mid1>&to=<mid2>"
+   ```
+
+   **Note:** Exclusion by prefix (v1) removes only entire materialized prefixes that are contained in the exclusion CIDR; the service does *not* perform CIDR subtraction or splitting of larger prefixes.
+
 ---
 
 ## Heimdallctl (CLI)
@@ -152,12 +170,12 @@ Volumes: `postgres_data`, `dataset_artifacts`. No `.env` required; everything is
 mkdir -p bin && go build -o bin/heimdallctl ./cmd/heimdallctl
 ```
 
-**Configuration:** Environment variables override config files. Default base URLs: `http://localhost:8080` (dataset), `http://localhost:8081` (scope), `http://localhost:8082` (routing). Optional config file: `~/.config/heimdall/config.yaml` or `.heimdall.yaml` in the current directory. Set `HEIMDALL_DATASET_URL`, `HEIMDALL_SCOPE_URL`, `HEIMDALL_ROUTING_URL`, `HEIMDALL_TIMEOUT` (seconds) to override.
+**Configuration:** Environment variables override config files. Default base URLs: `http://localhost:8080` (dataset), `http://localhost:8081` (scope), `http://localhost:8082` (routing), `http://localhost:8083` (target). Optional config file: `~/.config/heimdall/config.yaml` or `.heimdall.yaml` in the current directory. Set `HEIMDALL_DATASET_URL`, `HEIMDALL_SCOPE_URL`, `HEIMDALL_ROUTING_URL`, `HEIMDALL_TARGET_URL`, `HEIMDALL_TIMEOUT` (seconds) to override.
 
 **Examples:**
 
 ```bash
-# Health of all three services
+# Health of all four services
 heimdallctl status
 
 # Dataset: fetch (RIR or CAIDA), list, get
@@ -181,12 +199,22 @@ heimdallctl routing by-ip 8.8.8.8
 heimdallctl routing asn 15169
 heimdallctl routing asn prefixes 15169 --limit=10
 
+# Target: create, list, get, update, materialize, diff
+heimdallctl target list
+heimdallctl target create --name Spain --rule include,country,ES
+heimdallctl target get <target-id>
+heimdallctl target update <target-id> --rule include,country,ES --rule include,country,PT
+heimdallctl target materialize <target-id>
+heimdallctl target materializations <target-id>
+heimdallctl target prefixes <target-id> <materialization-id>
+heimdallctl target diff <target-id> --from <mid1> --to <mid2>
+
 # JSON output for scripting
 heimdallctl status -o json
 heimdallctl scope by-ip 8.8.8.8 -o json
 ```
 
-See the service OpenAPI specs for full semantics of each operation.
+See the service OpenAPI specs (`api/openapi/*.yaml`) for full semantics of each operation.
 
 ---
 
@@ -226,7 +254,23 @@ See the service OpenAPI specs for full semantics of each operation.
 | GET | `/v1/asn/prefixes/{asn}` | Prefixes where primary_asn = ASN (deterministic order); `limit`, `offset`, `dataset_id`. |
 | GET | `/health`, `/ready`, `/version` | Health and version. |
 
-OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`, `api/openapi/routing-service.yaml`.
+### target-service (port 8083)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/targets` | Create target (name, description, rules). |
+| GET | `/v1/targets` | List targets (default active only; `?include_inactive=true`, `limit`, `offset`). |
+| GET | `/v1/targets/{id}` | Get target with rules. |
+| PUT | `/v1/targets/{id}` | Full replacement of definition. |
+| DELETE | `/v1/targets/{id}` | Soft delete (idempotent). |
+| POST | `/v1/targets/{id}/materialize` | Run materialization (v1 synchronous). |
+| GET | `/v1/targets/{id}/materializations` | List snapshots (paginated). |
+| GET | `/v1/targets/{id}/materializations/{mid}` | Snapshot metadata (no prefixes). |
+| GET | `/v1/targets/{id}/materializations/{mid}/prefixes` | Prefixes (paginated). |
+| GET | `/v1/targets/{id}/materializations/diff?from=&to=` | Diff between two snapshots (same target). |
+| GET | `/health`, `/ready`, `/version` | Health and version. |
+
+OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.yaml`, `api/openapi/routing-service.yaml`, `api/openapi/target-service.yaml`.
 
 ---
 
@@ -238,6 +282,7 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
    CREATE DATABASE heimdall_datasets;
    CREATE DATABASE heimdall_scope_service;
    CREATE DATABASE heimdall_routing_service;
+   CREATE DATABASE heimdall_target_service;
    ```
 
 2. **Environment:** Copy `configs/.env.example` to `.env` and set DSNs, ports, and `DATASET_SERVICE_URL` (see comments in the example).
@@ -253,6 +298,9 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
 
    # Terminal 3 – routing-service (PORT=8082)
    go run ./cmd/routing-service
+
+   # Terminal 4 – target-service (PORT=8083; needs scope + routing)
+   go run ./cmd/target-service
    ```
 
 4. **Tests:**
@@ -261,13 +309,13 @@ OpenAPI specs: `api/openapi/dataset-service.yaml`, `api/openapi/scope-service.ya
    go test ./...
    ```
 
-   Integration tests for storage and import assume Postgres is available (same DSN as in `.env` or defaults in test code). Skip is used if the DB is unreachable.
+   Integration tests for storage and import use **separate test databases** (`heimdall_*_test`) by default so they never touch development data. These are created by the same `init-db.sql` when using Docker. If Postgres or the test DBs are unavailable, tests skip. You can override with `DATASET_DB_DSN`, `SCOPE_DB_DSN`, `TARGET_DB_DSN`, etc. to point to your test instance.
 
 ---
 
 ## Project status
 
-- **Phase:** Development. **scope-service: assigned resource inventory.** **routing-service: observed routing state.** RIR + CAIDA datasets, scope resolution, country/ASN inventory, IP→ASN (LPM) and ASN metadata/prefixes.
+- **Phase:** Development. **scope-service: assigned resource inventory.** **routing-service: observed routing state.** **target-service:** target definitions, materialization to CIDR snapshots, diff. RIR + CAIDA datasets, scope resolution, country/ASN inventory, IP→ASN (LPM) and ASN metadata/prefixes.
 - **Not yet:** A full scanning engine or exposure pipeline; this repo is the data and API foundation for such a system.
 
 ---

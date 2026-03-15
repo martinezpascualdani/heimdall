@@ -121,6 +121,7 @@ func (s *Service) Import(ctx context.Context, datasetID uuid.UUID) (*ImportResul
 				continue
 			}
 			cc := strings.ToUpper(rec.CC)
+			normalized, _ := BlockToNormalizedCIDRs(rec)
 			b := &domain.ScopeBlock{
 				DatasetID:        datasetID,
 				ScopeType:        "country",
@@ -129,6 +130,7 @@ func (s *Service) Import(ctx context.Context, datasetID uuid.UUID) (*ImportResul
 				BlockRawIdentity: rec.BlockRawIdentity(),
 				Start:            rec.Start,
 				Value:            rec.Value,
+				NormalizedCIDRs:  normalized,
 				Status:           rec.Status,
 				CC:               rec.CC,
 				Date:             rec.Date,

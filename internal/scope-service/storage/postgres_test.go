@@ -13,7 +13,7 @@ import (
 func getTestDSN(t *testing.T) string {
 	dsn := os.Getenv("SCOPE_DB_DSN")
 	if dsn == "" {
-		dsn = "postgres://heimdall:heimdall@localhost:5432/heimdall_scope_service?sslmode=disable"
+		dsn = "postgres://heimdall:heimdall@localhost:5432/heimdall_scope_service_test?sslmode=disable"
 	}
 	return dsn
 }
