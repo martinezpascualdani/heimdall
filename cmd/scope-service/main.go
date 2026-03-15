@@ -71,6 +71,16 @@ func main() {
 		DatasetBaseURL: datasetBaseURL,
 		DatasetClient:  datasetClientShort,
 	}
+	asnsHandler := &handlers.CountryASNsHandler{
+		Store:          store,
+		DatasetBaseURL: datasetBaseURL,
+		DatasetClient:  datasetClientShort,
+	}
+	asnSummaryHandler := &handlers.CountryASNSummaryHandler{
+		Store:          store,
+		DatasetBaseURL: datasetBaseURL,
+		DatasetClient:  datasetClientShort,
+	}
 
 	mux := http.NewServeMux()
 
@@ -133,6 +143,8 @@ func main() {
 
 	mux.Handle("GET /v1/scopes/country/{cc}/blocks", blocksHandler)
 	mux.Handle("GET /v1/scopes/country/{cc}/summary", summaryHandler)
+	mux.Handle("GET /v1/scopes/country/{cc}/asns", asnsHandler)
+	mux.Handle("GET /v1/scopes/country/{cc}/asn-summary", asnSummaryHandler)
 	mux.Handle("GET /v1/scopes/country/{cc}/datasets", datasetsHandler)
 
 	srv := &http.Server{Addr: ":" + port, Handler: mux}

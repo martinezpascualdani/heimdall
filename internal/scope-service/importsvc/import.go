@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type ImportResult struct {
 	ImportID        uuid.UUID `json:"import_id,omitempty"`
 	DatasetID       uuid.UUID `json:"dataset_id,omitempty"`
 	BlocksPersisted int64     `json:"blocks_persisted,omitempty"`
+	AsnsPersisted   int64     `json:"asns_persisted,omitempty"`
 	DurationMs      int64     `json:"duration_ms,omitempty"`
 	Error           string    `json:"error,omitempty"`
 }
@@ -37,6 +39,7 @@ type SyncResultItem struct {
 	DatasetID       uuid.UUID `json:"dataset_id"`
 	Status          string    `json:"status"`
 	BlocksPersisted int64     `json:"blocks_persisted,omitempty"`
+	AsnsPersisted   int64     `json:"asns_persisted,omitempty"`
 	DurationMs      int64     `json:"duration_ms,omitempty"`
 	Error           string    `json:"error,omitempty"`
 }
@@ -63,6 +66,7 @@ func (s *Service) Import(ctx context.Context, datasetID uuid.UUID) (*ImportResul
 			ImportID:        existing.ID,
 			DatasetID:       datasetID,
 			BlocksPersisted: existing.BlocksPersisted,
+			AsnsPersisted:   existing.AsnsPersisted,
 			DurationMs:      existing.DurationMs,
 		}, nil
 	}
@@ -78,23 +82,23 @@ func (s *Service) Import(ctx context.Context, datasetID uuid.UUID) (*ImportResul
 	artifactURL := fmt.Sprintf("%s/v1/datasets/%s/artifact", s.DatasetBase, datasetID.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifactURL, nil)
 	if err != nil {
-		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, err.Error())
+		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, 0, err.Error())
 		return &ImportResult{Status: string(domain.ImportStateFailed), ImportID: importID, DatasetID: datasetID, Error: err.Error()}, nil
 	}
 	resp, err := s.Client.Do(req)
 	if err != nil {
-		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, err.Error())
+		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, 0, err.Error())
 		return &ImportResult{Status: string(domain.ImportStateFailed), ImportID: importID, DatasetID: datasetID, Error: err.Error()}, nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, fmt.Sprintf("artifact status %d", resp.StatusCode))
+		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, 0, fmt.Sprintf("artifact status %d", resp.StatusCode))
 		return &ImportResult{Status: string(domain.ImportStateFailed), ImportID: importID, DatasetID: datasetID, Error: fmt.Sprintf("artifact status %d", resp.StatusCode)}, nil
 	}
 
 	result, err := rirparser.ParseStream(resp.Body)
 	if err != nil {
-		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, err.Error())
+		_ = s.Store.UpdateImportState(importID, domain.ImportStateFailed, 0, 0, err.Error())
 		return &ImportResult{Status: string(domain.ImportStateFailed), ImportID: importID, DatasetID: datasetID, Error: err.Error()}, nil
 	}
 
@@ -103,48 +107,80 @@ func (s *Service) Import(ctx context.Context, datasetID uuid.UUID) (*ImportResul
 		}
 	}()
 
-	var count int64
+	var count, asnsPersisted int64
 	statusSet := map[string]bool{}
 	for _, st := range AllowedStatuses {
 		statusSet[st] = true
 	}
 	for rec := range result.Records {
-		if rec.Type != rirparser.TypeIPv4 && rec.Type != rirparser.TypeIPv6 {
+		if rec.Type == rirparser.TypeIPv4 || rec.Type == rirparser.TypeIPv6 {
+			if rec.CC == "" {
+				continue
+			}
+			if !statusSet[strings.ToLower(rec.Status)] {
+				continue
+			}
+			cc := strings.ToUpper(rec.CC)
+			b := &domain.ScopeBlock{
+				DatasetID:        datasetID,
+				ScopeType:        "country",
+				ScopeValue:       cc,
+				AddressFamily:    string(rec.Type),
+				BlockRawIdentity: rec.BlockRawIdentity(),
+				Start:            rec.Start,
+				Value:            rec.Value,
+				Status:           rec.Status,
+				CC:               rec.CC,
+				Date:             rec.Date,
+				CreatedAt:        time.Now(),
+			}
+			if err := s.Store.UpsertBlock(b); err != nil {
+				continue
+			}
+			count++
 			continue
 		}
-		if rec.CC == "" {
-			continue
+		if rec.Type == rirparser.TypeASN {
+			if rec.CC == "" {
+				continue
+			}
+			if !statusSet[strings.ToLower(rec.Status)] {
+				continue
+			}
+			asnStart, err1 := strconv.ParseInt(rec.Start, 10, 64)
+			asnCount, err2 := strconv.ParseInt(rec.Value, 10, 64)
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			cc := strings.ToUpper(rec.CC)
+			a := &domain.ScopeASN{
+				DatasetID:   datasetID,
+				ScopeType:   "country",
+				ScopeValue:  cc,
+				ASNStart:    asnStart,
+				ASNCount:    asnCount,
+				Status:      rec.Status,
+				CC:          rec.CC,
+				Date:        rec.Date,
+				Registry:    registry,
+				RawIdentity: rec.BlockRawIdentity(),
+				CreatedAt:   time.Now(),
+			}
+			if err := s.Store.UpsertASN(a); err != nil {
+				continue
+			}
+			asnsPersisted++
 		}
-		if !statusSet[strings.ToLower(rec.Status)] {
-			continue
-		}
-		cc := strings.ToUpper(rec.CC)
-		b := &domain.ScopeBlock{
-			DatasetID:        datasetID,
-			ScopeType:        "country",
-			ScopeValue:       cc,
-			AddressFamily:    string(rec.Type),
-			BlockRawIdentity: rec.BlockRawIdentity(),
-			Start:            rec.Start,
-			Value:            rec.Value,
-			Status:           rec.Status,
-			CC:               rec.CC,
-			Date:             rec.Date,
-			CreatedAt:        time.Now(),
-		}
-		if err := s.Store.UpsertBlock(b); err != nil {
-			continue
-		}
-		count++
 	}
 
 	dur := time.Since(start).Milliseconds()
-	_ = s.Store.UpdateImportState(importID, domain.ImportStateImported, count, "")
+	_ = s.Store.UpdateImportState(importID, domain.ImportStateImported, count, asnsPersisted, "")
 	return &ImportResult{
 		Status:          string(domain.ImportStateImported),
 		ImportID:        importID,
 		DatasetID:       datasetID,
 		BlocksPersisted: count,
+		AsnsPersisted:   asnsPersisted,
 		DurationMs:      dur,
 	}, nil
 }
@@ -169,6 +205,7 @@ func (s *Service) Sync(ctx context.Context) (*SyncResponse, error) {
 			DatasetID:       datasetID,
 			Status:          imp.Status,
 			BlocksPersisted: imp.BlocksPersisted,
+			AsnsPersisted:   imp.AsnsPersisted,
 			DurationMs:      imp.DurationMs,
 			Error:           imp.Error,
 		}

@@ -147,6 +147,70 @@ func TestImport_Integration_Artifact404(t *testing.T) {
 	}
 }
 
+func TestImport_Integration_ASNPersistedAndIdempotent(t *testing.T) {
+	store, err := storage.NewPostgresStore(getTestDSN(t))
+	if err != nil {
+		t.Skipf("postgres not available: %v", err)
+	}
+	defer store.Close()
+
+	datasetID := uuid.New()
+	// Header + 1 IPv4 block + 2 ASN ranges (one single ASN asn_count=1, one range) + 1 ASN with invalid value (ignored)
+	artifactBody := "2|ripencc|1773529200|5|20240101|20240102|+00\n" +
+		"ripencc|ES|ipv4|1.2.3.0|256|20240101|allocated\n" +
+		"ripencc|ES|asn|65536|1|20240101|allocated\n" +
+		"ripencc|ES|asn|65540|10|20240101|assigned\n" +
+		"ripencc|ES|asn|99999|not_a_number|20240101|allocated\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/datasets/" + datasetID.String():
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"registry":"ripencc","serial":1773529200}`))
+		case "/v1/datasets/" + datasetID.String() + "/artifact":
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte(artifactBody))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	svc := &Service{
+		Store:       store,
+		DatasetBase: server.URL,
+		Client:      &http.Client{Timeout: 10 * time.Second},
+	}
+	ctx := context.Background()
+
+	// First import: 1 block + 2 ASN ranges (invalid ASN line ignored)
+	result1, err := svc.Import(ctx, datasetID)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if result1.Status != "imported" {
+		t.Errorf("first import: status=%q", result1.Status)
+	}
+	if result1.BlocksPersisted != 1 {
+		t.Errorf("first import: expected 1 block, got %d", result1.BlocksPersisted)
+	}
+	if result1.AsnsPersisted != 2 {
+		t.Errorf("first import: expected 2 ASNs (one single, one range; invalid line ignored), got %d", result1.AsnsPersisted)
+	}
+
+	// Reimport: idempotent; ON CONFLICT DO NOTHING so no new rows → blocks_persisted/asns_persisted from existing
+	result2, err := svc.Import(ctx, datasetID)
+	if err != nil {
+		t.Fatalf("Import second: %v", err)
+	}
+	if result2.Status != "already_imported" {
+		t.Errorf("second import: expected already_imported, got %q", result2.Status)
+	}
+	if result2.AsnsPersisted != 2 {
+		t.Errorf("second import: AsnsPersisted should be 2 (from existing), not re-counted; got %d", result2.AsnsPersisted)
+	}
+}
+
 func TestSync_Integration_RequiresDatasetService(t *testing.T) {
 	store, err := storage.NewPostgresStore(getTestDSN(t))
 	if err != nil {

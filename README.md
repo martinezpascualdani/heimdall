@@ -18,6 +18,7 @@ Heimdall aims to provide a structured, up-to-date view of global IP space as a f
 - **scope-service** — Imports blocks from dataset-service (by `dataset_id`), persists them, and provides:
   - **IP → country** resolution using a logical snapshot built from the latest imported dataset of each RIR (so the “current” view combines the newest RIPE, ARIN, APNIC, etc., without mixing stale data).
   - **Country inventory**: blocks and summary (IPv4/IPv6 counts) per country, with optional filtering by `dataset_id` or address family.
+  - **ASN inventory**: list ASN ranges and summary (asn_range_count, asn_total_count) per country. ASN inventory reflects RIR delegated assignments, not current BGP origin AS relationships.
   - **Sync**: one-shot sync that fetches the latest validated dataset per registry from dataset-service and imports any missing ones.
 - **Tests** — Unit and integration tests for parser, import pipeline, storage, and handlers (tests pass with Go and optional local Postgres).
 
@@ -120,6 +121,8 @@ Volumes: `postgres_data`, `dataset_artifacts` (downloaded RIR files). No `.env` 
    ```bash
    curl "http://localhost:8081/v1/scopes/country/ES/summary"
    curl "http://localhost:8081/v1/scopes/country/ES/blocks?limit=10"
+   curl "http://localhost:8081/v1/scopes/country/ES/asns?limit=10"
+   curl "http://localhost:8081/v1/scopes/country/ES/asn-summary"
    ```
 
 ---
@@ -145,6 +148,8 @@ Volumes: `postgres_data`, `dataset_artifacts` (downloaded RIR files). No `.env` 
 | GET | `/v1/scopes/by-ip/{ip}` | Resolve IP to country (optional `?dataset_id=`). |
 | GET | `/v1/scopes/country/{cc}/blocks` | Blocks for country (optional `dataset_id`, `address_family`, `limit`, `offset`). |
 | GET | `/v1/scopes/country/{cc}/summary` | IPv4/IPv6/total counts for country. |
+| GET | `/v1/scopes/country/{cc}/asns` | ASN ranges for country (RIR delegated; not BGP/IP→ASN). |
+| GET | `/v1/scopes/country/{cc}/asn-summary` | asn_range_count and asn_total_count for country. |
 | GET | `/v1/scopes/country/{cc}/datasets` | Imported datasets that have blocks for that country. |
 | GET | `/health`, `/ready`, `/version` | Health and version. |
 

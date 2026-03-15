@@ -18,6 +18,7 @@ Heimdall busca proporcionar una vista estructurada y actualizada del espacio IP 
 - **scope-service** — Importa bloques desde dataset-service (por `dataset_id`), los persiste y ofrece:
   - **Resolución IP → país** usando un snapshot lógico construido con el último dataset importado de cada RIR (la vista “actual” combina el RIPE, ARIN, APNIC, etc. más recientes, sin mezclar datos obsoletos).
   - **Inventario por país**: bloques y resumen (conteos IPv4/IPv6) por país, con filtrado opcional por `dataset_id` o familia de direcciones.
+  - **Inventario ASN**: listado de rangos ASN y resumen (asn_range_count, asn_total_count) por país. El inventario ASN refleja las asignaciones delegadas por los RIR, no las relaciones actuales de AS de origen BGP.
   - **Sync**: sincronización en un paso que obtiene el último dataset validado por registry desde dataset-service e importa los que falten.
 - **Tests** — Tests unitarios e de integración para parser, pipeline de importación, almacenamiento y handlers (pasan con Go y Postgres local opcional).
 
@@ -120,6 +121,8 @@ Volúmenes: `postgres_data`, `dataset_artifacts` (ficheros RIR descargados). No 
    ```bash
    curl "http://localhost:8081/v1/scopes/country/ES/summary"
    curl "http://localhost:8081/v1/scopes/country/ES/blocks?limit=10"
+   curl "http://localhost:8081/v1/scopes/country/ES/asns?limit=10"
+   curl "http://localhost:8081/v1/scopes/country/ES/asn-summary"
    ```
 
 ---
@@ -145,6 +148,8 @@ Volúmenes: `postgres_data`, `dataset_artifacts` (ficheros RIR descargados). No 
 | GET | `/v1/scopes/by-ip/{ip}` | Resuelve IP a país (opcional `?dataset_id=`). |
 | GET | `/v1/scopes/country/{cc}/blocks` | Bloques por país (opcional `dataset_id`, `address_family`, `limit`, `offset`). |
 | GET | `/v1/scopes/country/{cc}/summary` | Conteos IPv4/IPv6/total por país. |
+| GET | `/v1/scopes/country/{cc}/asns` | Rangos ASN por país (delegados RIR; no BGP/IP→ASN). |
+| GET | `/v1/scopes/country/{cc}/asn-summary` | asn_range_count y asn_total_count por país. |
 | GET | `/v1/scopes/country/{cc}/datasets` | Datasets importados que tienen bloques para ese país. |
 | GET | `/health`, `/ready`, `/version` | Salud y versión. |
 

@@ -251,6 +251,124 @@ paths:
               example:
                 error: no_dataset_available
 
+  /v1/scopes/country/{cc}/asns:
+    get:
+      summary: List ASN ranges for a country scope
+      description: |
+        ASN resource inventory from RIR delegated statistics; not BGP origin ASN lookup; not IP→ASN resolution.
+        Returns a paginated list of ASN ranges for the given country (ISO 3166-1 alpha-2). Without dataset_id uses
+        latest imported version per registry (multi-RIR); total is the number of ASN ranges (not individual ASNs).
+        datasets_used order is deterministic (by registry). Valid country with no ASNs returns 200 with items=[], total=0.
+      operationId: listCountryASNs
+      parameters:
+        - name: cc
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 2
+            example: ES
+          description: ISO 3166-1 alpha-2 country code
+        - name: dataset_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100000
+            default: 1000
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated ASN ranges (total = number of ranges; individual ASN count in /asn-summary)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ASNsResponse'
+        '400':
+          description: Invalid country code, dataset_id, or limit/offset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: dataset_id valid but not imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: dataset_not_imported
+        '503':
+          description: No dataset available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/scopes/country/{cc}/asn-summary:
+    get:
+      summary: Summary of ASN ranges for a country scope
+      description: |
+        ASN resource inventory from RIR delegated statistics; not BGP origin ASN lookup; not IP→ASN resolution.
+        Returns asn_range_count (number of ASN range rows) and asn_total_count (sum of ASNs across ranges).
+        datasets_used is required and listed explicitly in the response (same semantics as /asns).
+      operationId: getCountryASNSummary
+      parameters:
+        - name: cc
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 2
+            example: ES
+          description: ISO 3166-1 alpha-2 country code
+        - name: dataset_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Summary with asn_range_count and asn_total_count; datasets_used always present
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ASNSummaryResponse'
+        '400':
+          description: Invalid country code or dataset_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: dataset_id not imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: No dataset available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /v1/scopes/country/{cc}/datasets:
     get:
       summary: List imported datasets for a country scope
@@ -298,6 +416,9 @@ components:
         blocks_persisted:
           type: integer
           format: int64
+        asns_persisted:
+          type: integer
+          format: int64
         duration_ms:
           type: integer
           format: int64
@@ -325,6 +446,9 @@ components:
           type: string
           description: imported | already_imported | failed
         blocks_persisted:
+          type: integer
+          format: int64
+        asns_persisted:
           type: integer
           format: int64
         duration_ms:
@@ -483,6 +607,100 @@ components:
         total:
           type: integer
           description: ipv4_block_count + ipv6_block_count
+    ASNsResponse:
+      type: object
+      required:
+        - scope_type
+        - scope_value
+        - datasets_used
+        - count
+        - total
+        - limit
+        - offset
+        - has_more
+        - items
+      properties:
+        scope_type:
+          type: string
+          example: country
+        scope_value:
+          type: string
+          example: ES
+        datasets_used:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetUsedItem'
+        count:
+          type: integer
+        total:
+          type: integer
+          format: int64
+          description: Total number of ASN ranges (not individual ASNs)
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ASNItem'
+    ASNItem:
+      type: object
+      required:
+        - asn_start
+        - asn_count
+        - asn_end
+        - status
+        - cc
+        - date
+      properties:
+        asn_start:
+          type: integer
+          format: int64
+        asn_count:
+          type: integer
+          format: int64
+        asn_end:
+          type: integer
+          format: int64
+          description: asn_start + asn_count - 1 (computed)
+        status:
+          type: string
+        cc:
+          type: string
+        date:
+          type: string
+          description: Raw date in YYYYMMDD format (documentary, not reformatted)
+    ASNSummaryResponse:
+      type: object
+      required:
+        - scope_type
+        - scope_value
+        - datasets_used
+        - asn_range_count
+        - asn_total_count
+      properties:
+        scope_type:
+          type: string
+          example: country
+        scope_value:
+          type: string
+          example: ES
+        datasets_used:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetUsedItem'
+          description: Required; snapshots used for this summary
+        asn_range_count:
+          type: integer
+          format: int64
+          description: Number of ASN range rows
+        asn_total_count:
+          type: integer
+          format: int64
+          description: Sum of ASNs across all ranges (individual AS count)
     DatasetsResponse:
       type: object
       required:

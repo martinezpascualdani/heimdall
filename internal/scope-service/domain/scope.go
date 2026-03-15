@@ -25,6 +25,7 @@ type ScopeImport struct {
 	ConfigEffective string           `json:"config_effective"`   // e.g. status_filter hash or JSON
 	State           ScopeImportState `json:"state"`
 	BlocksPersisted int64            `json:"blocks_persisted"`
+	AsnsPersisted   int64            `json:"asns_persisted"`
 	DurationMs      int64            `json:"duration_ms"`
 	Error           string           `json:"error,omitempty"`
 	CreatedAt       time.Time        `json:"created_at"`
@@ -45,4 +46,22 @@ type ScopeBlock struct {
 	CC               string    `json:"cc"`
 	Date             string    `json:"date"`
 	CreatedAt        time.Time `json:"created_at"`
+}
+
+// ScopeASN is an ASN range for a scope (scope_type + scope_value). Stored separately from IP blocks.
+// ASNStart is the first ASN of the range; ASNCount is the size (single ASN = 1). Date is raw YYYYMMDD.
+// Registry is denormalized convenience (stable internal id: ripencc, arin, etc.); source of truth is dataset_id.
+type ScopeASN struct {
+	ID          uuid.UUID `json:"id"`
+	DatasetID   uuid.UUID `json:"dataset_id"`
+	ScopeType   string    `json:"scope_type"`
+	ScopeValue  string    `json:"scope_value"`
+	ASNStart    int64     `json:"asn_start"`
+	ASNCount    int64     `json:"asn_count"`
+	Status      string    `json:"status"`
+	CC          string    `json:"cc"`
+	Date        string    `json:"date"`   // raw YYYYMMDD
+	Registry    string    `json:"registry,omitempty"`
+	RawIdentity string    `json:"raw_identity"`
+	CreatedAt   time.Time `json:"created_at"`
 }

@@ -68,24 +68,49 @@ func migrateScopeService(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`ALTER TABLE scope_imports ADD COLUMN IF NOT EXISTS registry VARCHAR(32) DEFAULT ''`)
+	if _, err := db.Exec(`ALTER TABLE scope_imports ADD COLUMN IF NOT EXISTS registry VARCHAR(32) DEFAULT ''`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE scope_imports ADD COLUMN IF NOT EXISTS asns_persisted BIGINT DEFAULT 0`); err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS scope_asns (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			dataset_id UUID NOT NULL,
+			scope_type VARCHAR(32) NOT NULL,
+			scope_value VARCHAR(16) NOT NULL,
+			asn_start BIGINT NOT NULL,
+			asn_count BIGINT NOT NULL,
+			status VARCHAR(32),
+			cc VARCHAR(4),
+			date_value VARCHAR(16),
+			registry VARCHAR(32),
+			raw_identity TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(dataset_id, scope_type, scope_value, raw_identity)
+		);
+		CREATE INDEX IF NOT EXISTS idx_scope_asns_dataset_scope ON scope_asns(dataset_id, scope_type, scope_value);
+		CREATE INDEX IF NOT EXISTS idx_scope_asns_scope ON scope_asns(scope_type, scope_value);
+		CREATE INDEX IF NOT EXISTS idx_scope_asns_scope_start ON scope_asns(scope_type, scope_value, asn_start);
+	`)
 	return err
 }
 
 // CreateImport inserts a ScopeImport.
 func (s *PostgresStore) CreateImport(imp *domain.ScopeImport) error {
 	_, err := s.db.Exec(`
-		INSERT INTO scope_imports (id, dataset_id, registry, config_effective, state, blocks_persisted, duration_ms, error_text, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, imp.ID, imp.DatasetID, imp.Registry, imp.ConfigEffective, imp.State, imp.BlocksPersisted, imp.DurationMs, imp.Error, imp.CreatedAt)
+		INSERT INTO scope_imports (id, dataset_id, registry, config_effective, state, blocks_persisted, asns_persisted, duration_ms, error_text, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, imp.ID, imp.DatasetID, imp.Registry, imp.ConfigEffective, imp.State, imp.BlocksPersisted, imp.AsnsPersisted, imp.DurationMs, imp.Error, imp.CreatedAt)
 	return err
 }
 
-// UpdateImportState updates state and optional blocks count and error.
-func (s *PostgresStore) UpdateImportState(id uuid.UUID, state domain.ScopeImportState, blocksPersisted int64, errText string) error {
+// UpdateImportState updates state, blocks_persisted, asns_persisted and optional error.
+func (s *PostgresStore) UpdateImportState(id uuid.UUID, state domain.ScopeImportState, blocksPersisted, asnsPersisted int64, errText string) error {
 	_, err := s.db.Exec(`
-		UPDATE scope_imports SET state = $1, blocks_persisted = $2, error_text = $3 WHERE id = $4
-	`, state, blocksPersisted, errText, id)
+		UPDATE scope_imports SET state = $1, blocks_persisted = $2, asns_persisted = $3, error_text = $4 WHERE id = $5
+	`, state, blocksPersisted, asnsPersisted, errText, id)
 	return err
 }
 
@@ -279,9 +304,9 @@ func (s *PostgresStore) HasImportedDataset(datasetID uuid.UUID) (bool, error) {
 func (s *PostgresStore) FindImportByDatasetAndConfig(datasetID uuid.UUID, configEffective string) (*domain.ScopeImport, error) {
 	var imp domain.ScopeImport
 	err := s.db.QueryRow(`
-		SELECT id, dataset_id, COALESCE(registry, ''), config_effective, state, blocks_persisted, duration_ms, error_text, created_at
+		SELECT id, dataset_id, COALESCE(registry, ''), config_effective, state, blocks_persisted, COALESCE(asns_persisted, 0), duration_ms, error_text, created_at
 		FROM scope_imports WHERE dataset_id = $1 AND config_effective = $2 AND state = $3 LIMIT 1
-	`, datasetID, configEffective, domain.ImportStateImported).Scan(&imp.ID, &imp.DatasetID, &imp.Registry, &imp.ConfigEffective, &imp.State, &imp.BlocksPersisted, &imp.DurationMs, &imp.Error, &imp.CreatedAt)
+	`, datasetID, configEffective, domain.ImportStateImported).Scan(&imp.ID, &imp.DatasetID, &imp.Registry, &imp.ConfigEffective, &imp.State, &imp.BlocksPersisted, &imp.AsnsPersisted, &imp.DurationMs, &imp.Error, &imp.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -389,6 +414,69 @@ func (s *PostgresStore) ListImportedDatasetsForScope(scopeType, scopeValue strin
 		out = append(out, sum)
 	}
 	return out, rows.Err()
+}
+
+// UpsertASN inserts or ignores an ASN range (unique on dataset_id, scope_type, scope_value, raw_identity).
+func (s *PostgresStore) UpsertASN(a *domain.ScopeASN) error {
+	_, err := s.db.Exec(`
+		INSERT INTO scope_asns (dataset_id, scope_type, scope_value, asn_start, asn_count, status, cc, date_value, registry, raw_identity, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (dataset_id, scope_type, scope_value, raw_identity) DO NOTHING
+	`, a.DatasetID, a.ScopeType, a.ScopeValue, a.ASNStart, a.ASNCount, a.Status, a.CC, a.Date, a.Registry, a.RawIdentity, a.CreatedAt)
+	return err
+}
+
+// ListASNsByScope returns ASN ranges for scope_type and scope_value, filtered by datasetIDs.
+// Order: asn_start ASC, raw_identity for stable ordering when two ranges share the same asn_start.
+func (s *PostgresStore) ListASNsByScope(scopeType, scopeValue string, datasetIDs []uuid.UUID, limit, offset int) ([]*domain.ScopeASN, error) {
+	if len(datasetIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`
+		SELECT id, dataset_id, scope_type, scope_value, asn_start, asn_count, status, cc, date_value, registry, raw_identity, created_at
+		FROM scope_asns
+		WHERE scope_type = $1 AND scope_value = $2 AND dataset_id = ANY($3)
+		ORDER BY asn_start ASC, raw_identity
+		LIMIT $4 OFFSET $5
+	`, scopeType, scopeValue, pq.Array(datasetIDs), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.ScopeASN
+	for rows.Next() {
+		var a domain.ScopeASN
+		err := rows.Scan(&a.ID, &a.DatasetID, &a.ScopeType, &a.ScopeValue, &a.ASNStart, &a.ASNCount, &a.Status, &a.CC, &a.Date, &a.Registry, &a.RawIdentity, &a.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &a)
+	}
+	return out, rows.Err()
+}
+
+// CountASNRangeByScope returns the number of ASN range rows for the scope (for pagination total).
+func (s *PostgresStore) CountASNRangeByScope(scopeType, scopeValue string, datasetIDs []uuid.UUID) (int64, error) {
+	if len(datasetIDs) == 0 {
+		return 0, nil
+	}
+	var count int64
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM scope_asns WHERE scope_type = $1 AND scope_value = $2 AND dataset_id = ANY($3)
+	`, scopeType, scopeValue, pq.Array(datasetIDs)).Scan(&count)
+	return count, err
+}
+
+// SumASNCountByScope returns the sum of asn_count for the scope (total individual ASNs across ranges).
+func (s *PostgresStore) SumASNCountByScope(scopeType, scopeValue string, datasetIDs []uuid.UUID) (int64, error) {
+	if len(datasetIDs) == 0 {
+		return 0, nil
+	}
+	var sum int64
+	err := s.db.QueryRow(`
+		SELECT COALESCE(SUM(asn_count), 0) FROM scope_asns WHERE scope_type = $1 AND scope_value = $2 AND dataset_id = ANY($3)
+	`, scopeType, scopeValue, pq.Array(datasetIDs)).Scan(&sum)
+	return sum, err
 }
 
 // Ping for readiness.

@@ -269,3 +269,76 @@ func TestPostgresStore_FindBlockByIPInLatestPerRegistry(t *testing.T) {
 		t.Errorf("scope_value: got %s", match.ScopeValue)
 	}
 }
+
+func TestPostgresStore_ASNs(t *testing.T) {
+	store, err := NewPostgresStore(getTestDSN(t))
+	if err != nil {
+		t.Skipf("postgres not available: %v", err)
+	}
+	defer store.Close()
+
+	datasetID := uuid.New()
+	impID := uuid.New()
+	imp := &domain.ScopeImport{
+		ID: impID, DatasetID: datasetID, Registry: "ripencc", ConfigEffective: "status=allocated,assigned",
+		State: domain.ImportStateImported, BlocksPersisted: 0, AsnsPersisted: 2, CreatedAt: time.Now(),
+	}
+	if err := store.CreateImport(imp); err != nil {
+		t.Fatalf("CreateImport: %v", err)
+	}
+
+	// Single ASN (asn_count=1) and a range
+	a1 := &domain.ScopeASN{
+		DatasetID: datasetID, ScopeType: "country", ScopeValue: "ES",
+		ASNStart: 65536, ASNCount: 1, Status: "allocated", CC: "ES", Date: "20240101",
+		Registry: "ripencc", RawIdentity: "ripencc|ES|asn|65536|1|20240101|allocated", CreatedAt: time.Now(),
+	}
+	a2 := &domain.ScopeASN{
+		DatasetID: datasetID, ScopeType: "country", ScopeValue: "ES",
+		ASNStart: 65540, ASNCount: 10, Status: "assigned", CC: "ES", Date: "20240101",
+		Registry: "ripencc", RawIdentity: "ripencc|ES|asn|65540|10|20240101|assigned", CreatedAt: time.Now(),
+	}
+	if err := store.UpsertASN(a1); err != nil {
+		t.Fatalf("UpsertASN: %v", err)
+	}
+	if err := store.UpsertASN(a2); err != nil {
+		t.Fatalf("UpsertASN: %v", err)
+	}
+
+	ids := []uuid.UUID{datasetID}
+	rangeCount, err := store.CountASNRangeByScope("country", "ES", ids)
+	if err != nil {
+		t.Fatalf("CountASNRangeByScope: %v", err)
+	}
+	if rangeCount != 2 {
+		t.Errorf("CountASNRangeByScope: want 2, got %d", rangeCount)
+	}
+	sum, err := store.SumASNCountByScope("country", "ES", ids)
+	if err != nil {
+		t.Fatalf("SumASNCountByScope: %v", err)
+	}
+	if sum != 11 {
+		t.Errorf("SumASNCountByScope: want 11 (1+10), got %d", sum)
+	}
+
+	list, err := store.ListASNsByScope("country", "ES", ids, 10, 0)
+	if err != nil {
+		t.Fatalf("ListASNsByScope: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListASNsByScope: want 2, got %d", len(list))
+	}
+	// Order: asn_start ASC, raw_identity
+	if list[0].ASNStart != 65536 || list[0].ASNCount != 1 {
+		t.Errorf("first ASN: want 65536/1, got %d/%d", list[0].ASNStart, list[0].ASNCount)
+	}
+	if list[1].ASNStart != 65540 || list[1].ASNCount != 10 {
+		t.Errorf("second ASN: want 65540/10, got %d/%d", list[1].ASNStart, list[1].ASNCount)
+	}
+
+	// Country with no ASNs
+	rangeCount, _ = store.CountASNRangeByScope("country", "XX", ids)
+	if rangeCount != 0 {
+		t.Errorf("CountASNRangeByScope XX: want 0, got %d", rangeCount)
+	}
+}
