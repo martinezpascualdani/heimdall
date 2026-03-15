@@ -14,13 +14,14 @@ import (
 
 // Client calls Heimdall HTTP APIs. No business logic; only HTTP and JSON.
 type Client struct {
-	cfg      *config.Config
-	http     *http.Client
-	dataset  string
-	scope    string
-	routing  string
-	target   string
-	campaign string
+	cfg       *config.Config
+	http      *http.Client
+	dataset   string
+	scope     string
+	routing   string
+	target    string
+	campaign  string
+	execution string
 }
 
 // New builds a Client from config. Base URLs are trimmed of trailing slashes.
@@ -29,12 +30,13 @@ func New(cfg *config.Config) *Client {
 		cfg = config.Load()
 	}
 	c := &Client{
-		cfg:      cfg,
-		dataset:  strings.TrimSuffix(cfg.DatasetURL, "/"),
-		scope:    strings.TrimSuffix(cfg.ScopeURL, "/"),
-		routing:  strings.TrimSuffix(cfg.RoutingURL, "/"),
-		target:   strings.TrimSuffix(cfg.TargetURL, "/"),
-		campaign: strings.TrimSuffix(cfg.CampaignURL, "/"),
+		cfg:       cfg,
+		dataset:   strings.TrimSuffix(cfg.DatasetURL, "/"),
+		scope:     strings.TrimSuffix(cfg.ScopeURL, "/"),
+		routing:   strings.TrimSuffix(cfg.RoutingURL, "/"),
+		target:    strings.TrimSuffix(cfg.TargetURL, "/"),
+		campaign:  strings.TrimSuffix(cfg.CampaignURL, "/"),
+		execution: strings.TrimSuffix(cfg.ExecutionURL, "/"),
 	}
 	c.http = &http.Client{Timeout: cfg.Timeout}
 	return c
@@ -256,6 +258,11 @@ func (c *Client) TargetHealth(ctx context.Context) HealthResult {
 // CampaignHealth calls GET /health on campaign-service.
 func (c *Client) CampaignHealth(ctx context.Context) HealthResult {
 	return c.health(ctx, c.campaign)
+}
+
+// ExecutionHealth calls GET /health on execution-service.
+func (c *Client) ExecutionHealth(ctx context.Context) HealthResult {
+	return c.health(ctx, c.execution)
 }
 
 func (c *Client) health(ctx context.Context, baseURL string) HealthResult {

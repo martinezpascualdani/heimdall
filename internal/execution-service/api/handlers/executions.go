@@ -95,7 +95,7 @@ func (h *ExecutionsHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]interface{}, 0, len(jobs))
 	for _, j := range jobs {
-		items = append(items, jobToMap(j))
+		items = append(items, JobToMap(j))
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"items":  items,
@@ -184,35 +184,3 @@ func executionToMap(e *domain.Execution) map[string]interface{} {
 	return m
 }
 
-func jobToMap(j *domain.ExecutionJob) map[string]interface{} {
-	m := map[string]interface{}{
-		"id":            j.ID,
-		"execution_id":  j.ExecutionID,
-		"payload":       j.Payload,
-		"status":        j.Status,
-		"attempt":       j.Attempt,
-		"max_attempts":  j.MaxAttempts,
-		"error_message": j.ErrorMessage,
-		"created_at":    j.CreatedAt,
-		"updated_at":    j.UpdatedAt,
-	}
-	if j.AssignedWorkerID != nil {
-		m["assigned_worker_id"] = j.AssignedWorkerID
-	}
-	if j.LeaseExpiresAt != nil {
-		m["lease_expires_at"] = j.LeaseExpiresAt
-	}
-	if j.LeaseID != "" {
-		m["lease_id"] = j.LeaseID
-	}
-	if j.ResultSummary != nil {
-		m["result_summary"] = j.ResultSummary
-	}
-	if j.StartedAt != nil {
-		m["started_at"] = j.StartedAt
-	}
-	if j.CompletedAt != nil {
-		m["completed_at"] = j.CompletedAt
-	}
-	return m
-}

@@ -209,8 +209,8 @@ func PrintASNPrefixes(w io.Writer, r *client.RoutingASNPrefixesResponse) {
 	fmt.Fprintln(w)
 }
 
-// PrintStatus writes health status of dataset, scope, routing, target, and campaign services.
-func PrintStatus(w io.Writer, dataset, scope, routing, target, campaign client.HealthResult) {
+// PrintStatus writes health status of dataset, scope, routing, target, campaign, and execution services.
+func PrintStatus(w io.Writer, dataset, scope, routing, target, campaign, execution client.HealthResult) {
 	section(w, "Service status")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "  SERVICE\tSTATUS\tDETAIL")
@@ -220,6 +220,7 @@ func PrintStatus(w io.Writer, dataset, scope, routing, target, campaign client.H
 	statusRow("routing", routing, tw)
 	statusRow("target", target, tw)
 	statusRow("campaign", campaign, tw)
+	statusRow("execution", execution, tw)
 	tw.Flush()
 	fmt.Fprintln(w)
 }
@@ -630,5 +631,155 @@ func PrintCampaignRunGet(w io.Writer, r *client.CampaignRunResponse) {
 	if r.Stats != nil {
 		kv(w, "Stats", fmt.Sprintf("%v", r.Stats))
 	}
+	fmt.Fprintln(w)
+}
+
+// --- execution / worker (execution-service) ---
+
+// PrintExecutionList writes executions table.
+func PrintExecutionList(w io.Writer, r *client.ExecutionListResponse) {
+	if r == nil || len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No executions.")
+		return
+	}
+	section(w, "Executions")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tRUN_ID\tCAMPAIGN_ID\tSTATUS\tJOBS\tCOMPLETED\tFAILED\tCREATED_AT")
+	fmt.Fprintln(tw, "  ──\t──────\t───────────\t──────\t────\t─────────\t─────\t──────────")
+	for _, e := range r.Items {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
+			trunc(e.ID, 8),
+			trunc(e.RunID, 8),
+			trunc(e.CampaignID, 8),
+			e.Status,
+			e.TotalJobs,
+			e.CompletedJobs,
+			e.FailedJobs,
+			e.CreatedAt,
+		)
+	}
+	tw.Flush()
+	fmt.Fprintf(w, "\n  Total: %d (limit %d, offset %d)\n\n", r.Total, r.Limit, r.Offset)
+}
+
+// PrintExecution writes one execution (get).
+func PrintExecution(w io.Writer, e *client.ExecutionItem) {
+	if e == nil {
+		return
+	}
+	section(w, "Execution · "+trunc(e.ID, 8))
+	kv(w, "ID", e.ID)
+	kv(w, "Run ID", e.RunID)
+	kv(w, "Campaign ID", e.CampaignID)
+	kv(w, "Target ID", e.TargetID)
+	kv(w, "Target materialization ID", e.TargetMaterializationID)
+	kv(w, "Scan profile", e.ScanProfileSlug)
+	kv(w, "Status", e.Status)
+	kv(w, "Total jobs", fmt.Sprintf("%d", e.TotalJobs))
+	kv(w, "Completed", fmt.Sprintf("%d", e.CompletedJobs))
+	kv(w, "Failed", fmt.Sprintf("%d", e.FailedJobs))
+	kv(w, "Created", e.CreatedAt)
+	kv(w, "Updated", e.UpdatedAt)
+	if e.CompletedAt != nil {
+		kv(w, "Completed at", *e.CompletedAt)
+	}
+	if e.ErrorSummary != "" {
+		kv(w, "Error summary", e.ErrorSummary)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintExecutionJobs writes jobs table (execution jobs or worker jobs).
+func PrintExecutionJobs(w io.Writer, items []client.ExecutionJobItem, total, limit, offset int, title string) {
+	if len(items) == 0 {
+		fmt.Fprintln(w, "  No jobs.")
+		return
+	}
+	if title != "" {
+		section(w, title)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tEXECUTION_ID\tSTATUS\tATTEMPT\tMAX\tWORKER\tLEASE_EXPIRES\tERROR")
+	fmt.Fprintln(tw, "  ──\t────────────\t──────\t───────\t───\t──────\t────────────\t─────")
+	for _, j := range items {
+		worker := "—"
+		if j.AssignedWorkerID != nil {
+			worker = trunc(*j.AssignedWorkerID, 8)
+		}
+		expires := "—"
+		if j.LeaseExpiresAt != nil {
+			expires = *j.LeaseExpiresAt
+		}
+		errStr := trunc(j.ErrorMessage, 20)
+		if errStr == "" {
+			errStr = "—"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n",
+			trunc(j.ID, 8),
+			trunc(j.ExecutionID, 8),
+			j.Status,
+			j.Attempt,
+			j.MaxAttempts,
+			worker,
+			expires,
+			errStr,
+		)
+	}
+	tw.Flush()
+	if total >= 0 && (limit > 0 || offset > 0) {
+		fmt.Fprintf(w, "\n  Total: %d\n", total)
+	}
+	fmt.Fprintln(w)
+}
+
+// PrintWorkerList writes workers table.
+func PrintWorkerList(w io.Writer, r *client.WorkerListResponse) {
+	if r == nil || len(r.Items) == 0 {
+		fmt.Fprintln(w, "  No workers.")
+		return
+	}
+	section(w, "Workers")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  ID\tNAME\tREGION\tVERSION\tSTATUS\tLOAD\tMAX_CONC\tLAST_HEARTBEAT")
+	fmt.Fprintln(tw, "  ──\t────\t──────\t───────\t──────\t────\t────────\t──────────────")
+	for _, w := range r.Items {
+		hb := "—"
+		if w.LastHeartbeatAt != nil {
+			hb = *w.LastHeartbeatAt
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
+			trunc(w.ID, 8),
+			w.Name,
+			w.Region,
+			w.Version,
+			w.Status,
+			w.CurrentLoad,
+			w.MaxConcurrency,
+			hb,
+		)
+	}
+	tw.Flush()
+	fmt.Fprintf(w, "\n  Total: %d (limit %d, offset %d)\n\n", r.Total, r.Limit, r.Offset)
+}
+
+// PrintWorker writes one worker (get).
+func PrintWorker(w io.Writer, wkr *client.WorkerItem) {
+	if wkr == nil {
+		return
+	}
+	section(w, "Worker · "+wkr.Name)
+	kv(w, "ID", wkr.ID)
+	kv(w, "Name", wkr.Name)
+	kv(w, "Region", wkr.Region)
+	kv(w, "Version", wkr.Version)
+	kv(w, "Status", wkr.Status)
+	kv(w, "Current load", fmt.Sprintf("%d", wkr.CurrentLoad))
+	kv(w, "Max concurrency", fmt.Sprintf("%d", wkr.MaxConcurrency))
+	kv(w, "Capabilities", strings.Join(wkr.Capabilities, ", "))
+	if wkr.LastHeartbeatAt != nil {
+		kv(w, "Last heartbeat", *wkr.LastHeartbeatAt)
+	}
+	kv(w, "Created", wkr.CreatedAt)
+	kv(w, "Updated", wkr.UpdatedAt)
 	fmt.Fprintln(w)
 }

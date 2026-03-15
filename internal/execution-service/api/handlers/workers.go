@@ -10,10 +10,12 @@ import (
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/domain"
 )
 
-// WorkersHandler handles worker registration and heartbeat.
+// WorkersHandler handles worker registration, list, get, heartbeat, and list jobs.
 type WorkersHandler struct {
 	Store interface {
 		GetWorkerByID(uuid.UUID) (*domain.Worker, error)
+		ListWorkers(limit, offset int, status string) ([]*domain.Worker, int, error)
+		ListJobsByAssignedWorker(uuid.UUID, int) ([]*domain.ExecutionJob, error)
 		CreateWorker(*domain.Worker) error
 		UpdateWorkerHeartbeat(uuid.UUID, time.Time) error
 		UpdateWorker(uuid.UUID, []string, int) error
@@ -66,6 +68,35 @@ func (h *WorkersHandler) Register(w http.ResponseWriter, r *http.Request) {
 		"capabilities": wkr.Capabilities,
 		"max_concurrency": wkr.MaxConcurrency,
 		"status": wkr.Status,
+	})
+}
+
+// ListJobs returns jobs currently assigned to this worker (assigned or running). For debugging.
+func (h *WorkersHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	idStr := r.PathValue("id")
+	workerID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeJSONError(w, "invalid worker id", http.StatusBadRequest)
+		return
+	}
+	limit, _ := parseLimitOffset(r, defaultLimit, maxLimit)
+	jobs, err := h.Store.ListJobsByAssignedWorker(workerID, limit)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	items := make([]map[string]interface{}, 0, len(jobs))
+	for _, j := range jobs {
+		items = append(items, JobToMap(j))
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"items":  items,
+		"total":  len(items),
+		"limit":  limit,
 	})
 }
 
@@ -124,6 +155,49 @@ func (h *WorkersHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 
 // HeartbeatTimeoutForDisplay is used to show "offline" in GET when last heartbeat is older (no DB write).
 const HeartbeatTimeoutForDisplay = 2 * time.Minute
+
+// List returns workers with optional status filter; pagination limit/offset.
+func (h *WorkersHandler) List(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit, offset := parseLimitOffset(r, defaultLimit, maxLimit)
+	status := r.URL.Query().Get("status")
+	list, total, err := h.Store.ListWorkers(limit, offset, status)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	items := make([]map[string]interface{}, 0, len(list))
+	for _, w := range list {
+		load, _ := h.Store.CountActiveJobsByWorker(w.ID)
+		effectiveStatus := w.Status
+		if w.LastHeartbeatAt == nil || time.Since(*w.LastHeartbeatAt) > HeartbeatTimeoutForDisplay {
+			effectiveStatus = domain.WorkerStatusOffline
+		}
+		m := map[string]interface{}{
+			"id":                  w.ID,
+			"name":                w.Name,
+			"region":              w.Region,
+			"version":             w.Version,
+			"capabilities":        w.Capabilities,
+			"status":              effectiveStatus,
+			"last_heartbeat_at":   w.LastHeartbeatAt,
+			"max_concurrency":     w.MaxConcurrency,
+			"current_load":        load,
+			"created_at":          w.CreatedAt,
+			"updated_at":          w.UpdatedAt,
+		}
+		items = append(items, m)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
 
 // Get returns one worker by ID (with derived current_load). Status in response is "effective":
 // if last_heartbeat_at is older than HeartbeatTimeoutForDisplay, response status is "offline".

@@ -124,6 +124,8 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/workers", workersHandler.Register)
+	mux.HandleFunc("GET /v1/workers", workersHandler.List)
+	mux.HandleFunc("GET /v1/workers/{id}/jobs", workersHandler.ListJobs)
 	mux.HandleFunc("GET /v1/workers/{id}", workersHandler.Get)
 	mux.HandleFunc("PATCH /v1/workers/{id}", workersHandler.Heartbeat)
 
