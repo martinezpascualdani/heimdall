@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/api/handlers"
-	"github.com/martinezpascualdani/heimdall/internal/execution-service/inventoryclient"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/ingest"
+	"github.com/martinezpascualdani/heimdall/internal/execution-service/outbox"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/scheduler"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/storage"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/targetclient"
@@ -65,8 +65,6 @@ func main() {
 			ingestEnabled = b
 		}
 	}
-	inventoryURL := strings.TrimSuffix(os.Getenv("INVENTORY_SERVICE_URL"), "/")
-
 	store, err := storage.NewPostgresStore(dsn)
 	if err != nil {
 		log.Fatalf("execution-service: postgres: %v", err)
@@ -93,10 +91,11 @@ func main() {
 	sched := scheduler.NewScheduler(store, heartbeatTimeout, schedulerInterval)
 	go sched.Run(context.Background())
 
-	inventoryNotifier := inventoryclient.NewClient(inventoryURL, store)
+	outboxPublisher := outbox.NewPublisher(store, rdb)
+	go outboxPublisher.Run(context.Background())
 
 	workersHandler := &handlers.WorkersHandler{Store: store}
-	jobsHandler := &handlers.JobsHandler{Store: store, LeaseDuration: leaseDur, InventoryNotifier: inventoryNotifier}
+	jobsHandler := &handlers.JobsHandler{Store: store, LeaseDuration: leaseDur}
 	executionsHandler := &handlers.ExecutionsHandler{Store: store}
 
 	mux := http.NewServeMux()

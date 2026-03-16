@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/martinezpascualdani/heimdall/internal/inventory-service/api/handlers"
+	"github.com/martinezpascualdani/heimdall/internal/inventory-service/consumer"
 	"github.com/martinezpascualdani/heimdall/internal/inventory-service/storage"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -20,6 +23,10 @@ func main() {
 	if dsn == "" {
 		dsn = "postgres://heimdall:heimdall@localhost:5432/heimdall_inventory_service?sslmode=disable"
 	}
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8086"
@@ -30,6 +37,15 @@ func main() {
 		log.Fatalf("inventory-service: postgres: %v", err)
 	}
 	defer store.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer rdb.Close()
+
+	jobCompletedConsumer := consumer.NewJobCompletedConsumer(rdb, store)
+	if err := jobCompletedConsumer.EnsureConsumerGroup(context.Background()); err != nil {
+		log.Printf("inventory-service: ensure consumer group: %v", err)
+	}
+	go jobCompletedConsumer.Run(context.Background())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -42,6 +58,12 @@ func main() {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": "database"})
+			return
+		}
+		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": "redis"})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

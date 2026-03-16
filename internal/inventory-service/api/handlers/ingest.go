@@ -12,6 +12,7 @@ import (
 )
 
 // IngestHandler handles POST /v1/ingest/job-completed.
+// Official pipeline: Redis (consumer of heimdall:execution:job_completed). This HTTP endpoint is for administrative/manual/debug use only; do not use it in the normal production pipeline.
 type IngestHandler struct {
 	Store *storage.PostgresStore
 }

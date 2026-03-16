@@ -4,10 +4,11 @@ info:
   version: 0.1.0
   description: |
     **inventory-service:** Source of truth for assets, exposures and observations.
-    execution-service calls POST /v1/ingest/job-completed on each job complete (fire-and-forget).
-    Current state: assets and exposures with first_seen_at/last_seen_at; immutable observations table.
-    v1: host assets, tcp_port exposures. Filters by campaign_id, target_id, run_id apply to the same observation context.
-    **ready:** Requires Postgres.
+    **Official pipeline:** execution-service publishes job_completed events to Redis stream `heimdall:execution:job_completed` (outbox); inventory-service consumes via consumer group `inventory-service`. No HTTP call from execution-service to inventory in the normal flow.
+    **POST /v1/ingest/job-completed** is for administrative/manual/debug use only (replay, tests); do not use it in production pipeline.
+    Current state: assets and exposures with first_seen_at/last_seen_at; immutable observations table. v1: host assets, tcp_port exposures.
+    **ready:** Requires Postgres and Redis.
+    **v1 operational notes:** (1) execution-service assumes a single active outbox-publisher per DB to avoid duplicate Redis messages. (2) Consumer reads only new messages (XReadGroup ">"); PEL entries from a dead consumer are not reclaimed in v1 (XAUTOCLAIM or similar can be added later).
 
 paths:
   /health:
@@ -20,7 +21,7 @@ paths:
   /ready:
     get:
       summary: Readiness
-      description: false if Postgres unavailable.
+      description: false if Postgres or Redis unavailable.
       operationId: ready
       responses:
         '200':
@@ -37,10 +38,10 @@ paths:
 
   /v1/ingest/job-completed:
     post:
-      summary: Ingest job completion (explicit payload)
+      summary: Ingest job completion (administrative/manual/debug only)
       description: |
-        Idempotent: one ingest per (execution_id, job_id). If already ingested, returns 409.
-        Payload is explicit (observations + context), not result_summary. observed_at is required.
+        **Not used by the normal pipeline.** Official path is Redis (consumer of job_completed events). Use this endpoint only for replay, manual correction, or tests.
+        Idempotent: one ingest per (execution_id, job_id). If already ingested, returns 409. Payload is explicit (observations + context). observed_at is required.
       operationId: ingestJobCompleted
       requestBody:
         required: true

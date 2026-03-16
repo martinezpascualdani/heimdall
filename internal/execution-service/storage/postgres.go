@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/domain"
+	"github.com/martinezpascualdani/heimdall/pkg/events"
 )
 
 // PostgresStore implements execution-service persistence.
@@ -90,6 +91,18 @@ func migrateExecutionService(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_execution_jobs_status ON execution_jobs(status);
 		CREATE INDEX IF NOT EXISTS idx_execution_jobs_assigned_worker_id ON execution_jobs(assigned_worker_id);
 		CREATE INDEX IF NOT EXISTS idx_execution_jobs_pending_claim ON execution_jobs(execution_id, status) WHERE status = 'pending';
+
+		CREATE TABLE IF NOT EXISTS outbox_events (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			aggregate_type VARCHAR(64) NOT NULL,
+			aggregate_id UUID NOT NULL,
+			event_type VARCHAR(64) NOT NULL,
+			payload JSONB NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			published_at TIMESTAMPTZ,
+			stream_id TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_outbox_events_published_at ON outbox_events(published_at) WHERE published_at IS NULL;
 	`)
 	return err
 }
@@ -504,6 +517,54 @@ func (s *PostgresStore) JobComplete(jobID, workerID uuid.UUID, leaseID string, r
 		WHERE id = (SELECT execution_id FROM execution_jobs WHERE id = $2)
 		AND total_jobs = completed_jobs + 1
 	`, now, jobID)
+
+	// Outbox: same tx, insert job_completed event for inventory-service consumer
+	var runID, campaignID, targetID, targetMatID uuid.UUID
+	var scanProfileSlug string
+	err = tx.QueryRow(`
+		SELECT run_id, campaign_id, target_id, target_materialization_id, scan_profile_slug
+		FROM executions WHERE id = $1
+	`, j.ExecutionID).Scan(&runID, &campaignID, &targetID, &targetMatID, &scanProfileSlug)
+	if err != nil {
+		return err
+	}
+	observedAt := now
+	if j.CompletedAt != nil {
+		observedAt = *j.CompletedAt
+	}
+	var observations []events.JobCompletedObservation
+	if len(resultSummary) > 0 {
+		var result struct {
+			Observations []events.JobCompletedObservation `json:"observations"`
+		}
+		if err := json.Unmarshal(resultSummary, &result); err == nil && result.Observations != nil {
+			observations = result.Observations
+		}
+	}
+	evt := events.JobCompletedEvent{
+		EventType:               events.JobCompletedEventType,
+		PayloadVersion:          events.JobCompletedPayloadVersion,
+		ExecutionID:             j.ExecutionID.String(),
+		JobID:                   j.ID.String(),
+		RunID:                   runID.String(),
+		CampaignID:              campaignID.String(),
+		TargetID:                targetID.String(),
+		TargetMaterializationID: targetMatID.String(),
+		ScanProfileSlug:         scanProfileSlug,
+		ObservedAt:              observedAt,
+		Observations:            observations,
+	}
+	payloadBytes, err := json.Marshal(evt)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`
+		INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, created_at, published_at, stream_id)
+		VALUES ('job', $1, 'job_completed', $2, NOW(), NULL, NULL)
+	`, jobID, jsonbArg(json.RawMessage(payloadBytes)))
+	if err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -826,4 +887,54 @@ func (s *PostgresStore) ListWorkers(limit, offset int, status string) ([]*domain
 		out = append(out, &w)
 	}
 	return out, total, rows.Err()
+}
+
+// FetchUnpublishedOutboxEvents returns up to limit unpublished outbox rows.
+// It uses SELECT ... FOR UPDATE SKIP LOCKED in a short transaction; the lock is released on Commit(),
+// so the same row could be fetched by another caller after this returns. To avoid double publication,
+// v1 assumes a single active outbox-publisher per execution-service DB (e.g. one execution-service instance).
+// For multiple publishers you would need a claim (e.g. publishing_started_at / claimed_by) updated in the same tx.
+func (s *PostgresStore) FetchUnpublishedOutboxEvents(limit int) ([]events.OutboxEventRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`
+		SELECT id, payload FROM outbox_events
+		WHERE published_at IS NULL
+		ORDER BY created_at ASC
+		LIMIT $1
+		FOR UPDATE SKIP LOCKED
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []events.OutboxEventRow
+	for rows.Next() {
+		var row events.OutboxEventRow
+		if err := rows.Scan(&row.ID, &row.Payload); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MarkOutboxPublished sets published_at and stream_id for the outbox event. Call only after XADD succeeds.
+func (s *PostgresStore) MarkOutboxPublished(id uuid.UUID, streamID string) error {
+	_, err := s.db.Exec(`
+		UPDATE outbox_events SET published_at = NOW(), stream_id = $2 WHERE id = $1
+	`, id, streamID)
+	return err
 }

@@ -22,7 +22,7 @@ Heimdall is an **exposure intelligence platform** for security and network teams
 - **Targets:** Define scopes (include/exclude by country, ASN, prefix, world). **Materialize** to immutable CIDR snapshots and diff between them.
 - **Campaigns:** Create campaigns (target + scan profile), launch manually or on a schedule. Runs are dispatched to a queue.
 - **Execution plane:** Workers pull jobs, run port discovery (**ZMap** or **Masscan**), and report observations. Scale by adding workers or raising concurrency. Results are stored per job.
-- **Inventory:** execution-service forwards job completions to **inventory-service**; assets (e.g. hosts), exposures (e.g. open ports) and observations are stored for current state and history; diff between executions.
+- **Inventory:** execution-service publishes job_completed events to Redis; **inventory-service** consumes the stream and ingests assets (e.g. hosts), exposures (e.g. open ports) and observations; diff between executions.
 
 Everything is **API-first** and **containerized**. One CLI, **heimdallctl**, drives install, sync, and operations (executions, workers, requeue, cancel).
 
@@ -96,7 +96,7 @@ Use `install --skip-wait` to skip waiting for datasets. Optional config: `HEIMDA
 - **Target service** — Define targets (country, ASN, prefix, world). Materialize to CIDR snapshots; diff between snapshots.
 - **Campaign service** — Control plane: campaigns, scan profiles, runs. Manual or scheduled launch; dispatch to Redis Streams.
 - **Execution service** — Execution plane: consume runs, create executions and jobs; worker register, heartbeat, claim, complete/fail/renew, **requeue** and **cancel**.
-- **Inventory service** — Source of truth for assets, exposures and observations; ingest from execution-service on job complete; current state (first_seen/last_seen) and immutable history; diff between two executions.
+- **Inventory service** — Source of truth for assets, exposures and observations; consumes job_completed events from Redis (stream `heimdall:execution:job_completed`); current state (first_seen/last_seen) and immutable history; diff between two executions.
 - **Scan workers** — Pull-based; ZMap or Masscan; horizontal scale and per-worker concurrency.
 - **heimdallctl** — Status, **install** (datasets + sync), dataset/scope/routing/target/campaign, **execution** and **worker** (list, jobs, requeue, cancel, update concurrency).
 
@@ -189,7 +189,7 @@ OpenAPI specs (request/response schemas and semantics):
 | execution | [api/openapi/execution-service.yaml](api/openapi/execution-service.yaml) |
 | inventory | [api/openapi/inventory-service.yaml](api/openapi/inventory-service.yaml) |
 
-Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency, list jobs), jobs (claim, complete, fail, renew), executions (list, get, list jobs, **requeue**, **cancel**). On job complete it notifies inventory-service (fire-and-forget). Inventory-service: ingest (POST job-completed), assets, exposures, observations (with filters), diff between two executions.
+Execution-service: workers, jobs (claim, complete, fail, renew), executions (**requeue**, **cancel**). On job complete it writes to outbox and outbox-publisher publishes to Redis stream `heimdall:execution:job_completed`. Inventory-service: consumes that stream (official pipeline), assets, exposures, observations (with filters), diff between two executions. POST /v1/ingest/job-completed is admin/manual/debug only.
 
 ---
 
@@ -203,7 +203,7 @@ Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency
 | **target-service** | Targets, materialization, snapshots, diff | 8083 |
 | **campaign-service** | Campaigns, scan profiles, runs; dispatch to Redis | 8084 |
 | **execution-service** | Executions, jobs, workers (claim, complete, fail, requeue, cancel) | 8085 |
-| **inventory-service** | Assets, exposures, observations; ingest from execution-service; diff executions | 8086 |
+| **inventory-service** | Assets, exposures, observations; consumes Redis stream job_completed; diff executions | 8086 |
 | **Redis** | Stream `heimdall:campaign:runs` | 6379 |
 | **PostgreSQL** | All service DBs | 5432 |
 
@@ -211,7 +211,7 @@ Execution-service: workers (list, register, get, PATCH heartbeat/max_concurrency
 
 # 🔧 Scan workers
 
-Workers register with execution-service, heartbeat, and **pull** jobs. Each job has prefixes and port config; the worker runs **ZMap** or **Masscan** (`SCAN_ENGINE=zmap|masscan`, default masscan), parses results into observations (IP, port, status), and sends them in `result_summary`. Observations are stored in `execution_jobs.result_summary`. On job complete, execution-service notifies inventory-service (best-effort); inventory-service upserts assets/exposures and appends observations.
+Workers register with execution-service, heartbeat, and **pull** jobs. Each job has prefixes and port config; the worker runs **ZMap** or **Masscan** (`SCAN_ENGINE=zmap|masscan`, default masscan), parses results into observations (IP, port, status), and sends them in `result_summary`. Observations are stored in `execution_jobs.result_summary`. On job complete, execution-service writes a job_completed event to its outbox; the outbox-publisher publishes to Redis; inventory-service consumes the stream and upserts assets/exposures and appends observations.
 
 **Scale:** more replicas (`docker compose up -d --scale scan-worker=5`) and/or higher `WORKER_MAX_CONCURRENCY` per worker.
 

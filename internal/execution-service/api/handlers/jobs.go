@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -12,12 +11,8 @@ import (
 	"github.com/martinezpascualdani/heimdall/internal/execution-service/domain"
 )
 
-// InventoryNotifier notifies inventory-service when a job completes (fire-and-forget).
-type InventoryNotifier interface {
-	NotifyJobCompleted(ctx context.Context, jobID uuid.UUID, resultSummary json.RawMessage)
-}
-
 // JobsHandler handles job claim, complete, fail, renew.
+// Inventory ingest is via Redis (outbox-publisher -> stream -> inventory-service consumer); no HTTP notifier.
 type JobsHandler struct {
 	Store interface {
 		GetWorkerByID(uuid.UUID) (*domain.Worker, error)
@@ -28,8 +23,7 @@ type JobsHandler struct {
 		JobFail(jobID, workerID uuid.UUID, leaseID string, errorMessage string) error
 		JobRenew(jobID, workerID uuid.UUID, leaseID string, newExpiresAt time.Time) (bool, error)
 	}
-	LeaseDuration     time.Duration
-	InventoryNotifier InventoryNotifier
+	LeaseDuration time.Duration
 }
 
 // ClaimRequest is the body for POST /v1/jobs/claim.
@@ -149,9 +143,6 @@ func (h *JobsHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	if err := h.Store.JobComplete(jobID, workerID, req.LeaseID, req.ResultSummary); err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
-	}
-	if h.InventoryNotifier != nil {
-		h.InventoryNotifier.NotifyJobCompleted(r.Context(), jobID, req.ResultSummary)
 	}
 	log.Printf("execution-service: job job_id=%s completed by worker_id=%s", jobID, workerID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})

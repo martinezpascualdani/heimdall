@@ -157,7 +157,6 @@ services:
       TARGET_SERVICE_URL: http://target-service:8083
       PORT: "8085"
       INGEST_ENABLED: "true"
-      INVENTORY_SERVICE_URL: http://inventory-service:8086
     ports:
       - "8085:8085"
     healthcheck:
@@ -173,8 +172,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       INVENTORY_DB_DSN: postgres://heimdall:heimdall@postgres:5432/heimdall_inventory_service?sslmode=disable
+      REDIS_ADDR: redis:6379
       PORT: "8086"
     ports:
       - "8086:8086"
